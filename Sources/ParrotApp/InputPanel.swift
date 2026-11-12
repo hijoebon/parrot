@@ -193,7 +193,7 @@ private struct InputView: View {
                     .frame(width: 26, height: 26)
                 TextField(L("输入要翻译的文本…"), text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 17))
+                    .font(Theme.Font.body)
                     .lineLimit(1...4)
                     .focused($focused)
                     .onSubmit { submit() }

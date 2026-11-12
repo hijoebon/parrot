@@ -606,6 +606,35 @@ import ParrotCore
     })
 }
 
+@MainActor
+@Test func savedExpressionKeepsTheCompleteSourceAndMatchesTheVisibleResult() throws {
+    let state = makeContextTestState()
+    let source = String(repeating: "Keep the complete saved expression. ", count: 8)
+        .trimmingCharacters(in: .whitespaces)
+    let record = TranslationRecord(
+        sourceText: source, translated: "保留完整表达。", providerId: "saved", sourceLang: "en", targetLang: "zh"
+    )
+    state.openHistoryWorkspace(record)
+    state.updateDraft("An unfinished edit that has not been translated.")
+
+    #expect(state.saveCurrentExpression(translatedText: record.translated))
+    let entry = try #require(state.settings.learningVocabularyEntries.first)
+    #expect(entry.term == source)
+    #expect(entry.sourceSentence == source)
+    #expect(entry.meaning == record.translated)
+}
+
+@MainActor
+@Test func vocabularyShowsAllSavedWordsBeyondTheRecommendationLimit() {
+    let state = makeContextTestState()
+    state.settings.learningVocabularyEntries = (1...105).map {
+        LearningVocabularyEntry(id: "word \($0)", term: "word \($0)", meaning: "释义 \($0)")
+    }
+
+    #expect(state.learningVocabularyItems.count == 105)
+    #expect(Set(state.learningVocabularyItems.map(\.id)) == Set(state.settings.learningVocabularyEntries.map(\.id)))
+}
+
 @Test func urlRouteOptionsParseProfileAndSourceURL() {
     let options = AppURLRouteOptions.parse(queryItems: [
         URLQueryItem(name: "surface", value: "peek"),

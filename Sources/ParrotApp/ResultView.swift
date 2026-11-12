@@ -26,6 +26,11 @@ struct ResultView: View {
 
     @State private var feedbackText: String = ""
     @State private var sourceComposerFocused: Bool = false
+    @State private var vocabularySelection = ""
+    @State private var vocabularySelectionContext = ""
+    @State private var vocabularySelectionProviderID = ""
+    @State private var vocabularySelectionUsesTranslation = false
+    @State private var vocabularyDraft: WorkspaceVocabularyDraft?
 
     init(
         state: AppState,
@@ -70,8 +75,19 @@ struct ResultView: View {
             sourceComposerFocused = false
             state.setComposerFocused(false)
         }
+        .onChange(of: state.sourceDraft) { _ in clearVocabularySelection() }
+        .onChange(of: state.sourceText) { _ in clearVocabularySelection() }
+        .onChange(of: state.outcomes.map { [$0.providerId, $0.result?.translated ?? ""].joined(separator: "\u{0}") }) { _ in
+            if vocabularySelectionUsesTranslation,
+               !state.outcomes.contains(where: {
+                   $0.providerId == vocabularySelectionProviderID
+                       && $0.result?.translated == vocabularySelectionContext
+               }) {
+                clearVocabularySelection()
+            }
+        }
         .onExitCommand {
-            onClose()
+            if vocabularyDraft != nil { vocabularyDraft = nil } else { onClose() }
         }
     }
 
@@ -255,6 +271,10 @@ struct ResultView: View {
                 onCopy: { copy($0) },
                 onCopyAndReturn: isPrimary && canReturnToSourceApp ? { copyAndReturn($0) } : nil,
                 onReplaceInSourceApp: state.isPolishMode ? { replaceInSourceApp($0) } : nil,
+                onSelectionChange: { selection in
+                    updateVocabularySelection(selection, context: outcome.result?.translated ?? "",
+                                              providerID: outcome.providerId, usesTranslation: true)
+                },
                 onRetry: { state.retryProvider(outcome.providerId) },
                 onConfigure: { onConfigureProvider(outcome.providerId) }
             )
@@ -302,6 +322,7 @@ struct ResultView: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: Theme.Spacing.s4) {
+                IconButton("text.book.closed", help: "单词本") { onVocabulary() }
                 IconButton(
                     panelPresentation.isPinned ? "pin.fill" : "pin",
                     help: panelPresentation.isPinned ? "取消常驻" : "常驻",
@@ -349,7 +370,6 @@ struct ResultView: View {
                                 state.setContextProfile(profile)
                             }
                             Divider()
-                            Button(L("个人词库")) { onVocabulary() }
                             Button(L("规则记忆")) { onContextMemory() }
                         }
                     }
@@ -388,13 +408,57 @@ struct ResultView: View {
                     .font(Theme.Font.callout.weight(.medium))
                     .foregroundStyle(Theme.Palette.label2)
                 Spacer(minLength: 0)
+                Button(action: presentVocabularyEditor) {
+                    Label(L(vocabularyEntry == nil ? "加入单词本" : "已加入单词本"),
+                          systemImage: vocabularyEntry == nil ? "bookmark" : "bookmark.fill")
+                        .font(Theme.Font.callout)
+                }
+                .buttonStyle(.borderless)
+                .disabled(vocabularyTerm.isEmpty)
+                .help(L(vocabularyTerm.isEmpty ? "选中单词或短语后加入单词本" : "编辑单词与释义"))
+                .accessibilityIdentifier("workspace.addToVocabulary")
+                .popover(item: $vocabularyDraft, arrowEdge: .bottom) { draft in
+                    VocabularyEntryEditor(
+                        title: draft.entryID == nil ? "加入单词本" : "编辑单词",
+                        term: draft.term,
+                        meaning: draft.meaning,
+                        sourceSentence: draft.sourceSentence,
+                        onCancel: { vocabularyDraft = nil },
+                        onSave: { term, meaning, sentence in
+                            let id: String?
+                            if let entryID = draft.entryID {
+                                id = settings.updateLearningVocabularyEntry(
+                                    entryID, term: term, meaning: meaning, sourceSentence: sentence
+                                )
+                            } else {
+                                id = settings.addLearningVocabularyTerm(
+                                    term: term, meaning: meaning, sourceSentence: sentence,
+                                    sceneLabel: "工作区表达"
+                                )
+                            }
+                            if id != nil {
+                                vocabularyDraft = nil
+                                showFeedback(draft.entryID == nil ? "已加入单词本" : "已保存修改")
+                            }
+                            return id
+                        },
+                        lookup: { term in
+                            await state.lookupLearningSelection(
+                                term, contextText: draft.sourceSentence,
+                                providerID: draft.providerID,
+                                usesTranslation: draft.usesTranslation
+                            )?.translated
+                        },
+                        clearInitialMeaningOnTermChange: draft.entryID == nil
+                    )
+                }
             }
             ZStack(alignment: .topLeading) {
                 if state.sourceDraft.isEmpty {
                     Text(state.isPolishMode
                         ? L("输入或粘贴要润色的草稿…")
                         : L("输入或粘贴要翻译的文本…"))
-                        .font(.system(size: 14))
+                        .font(Theme.Font.body)
                         .foregroundStyle(Theme.Palette.label3)
                         .padding(.top, 10)
                         .allowsHitTesting(false)
@@ -407,7 +471,11 @@ struct ResultView: View {
                         sourceComposerFocused = focused
                         state.setComposerFocused(focused)
                     },
-                    onSelectionChange: { _ in }
+                    onSelectionChange: { selection in
+                        updateVocabularySelection(selection, context: state.sourceDraft,
+                                                  providerID: state.primarySuccessfulOutcome?.providerId ?? "",
+                                                  usesTranslation: false)
+                    }
                 )
                     .frame(height: sourceEditorHeight)
                     .accessibilityLabel(L("源文编辑器"))
@@ -423,6 +491,11 @@ struct ResultView: View {
                                   lineWidth: sourceComposerFocused ? 1 : 0.5)
             )
             HStack {
+                if vocabularyTerm.isEmpty && !state.sourceDraftTrimmed.isEmpty {
+                    Text(L("选中单词或短语后加入单词本"))
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.label2)
+                }
                 Spacer(minLength: 0)
                 if state.settings.advancedFeaturesEnabled && state.isPolishMode {
                     Button {
@@ -473,6 +546,59 @@ struct ResultView: View {
         let wrappedLines = max(1, Int(ceil(Double(max(state.sourceDraft.count, 1)) / 42.0)))
         let lines = min(6, max(2, max(explicitLines, wrappedLines)))
         return CGFloat(lines) * 20 + 12
+    }
+
+    private var vocabularyTerm: String {
+        let text = vocabularySelection.isEmpty ? state.sourceDraftTrimmed
+            : LearningRecommendationEngine.normalizedVocabularyTerm(vocabularySelection)
+        // A paragraph is context. Ask the user to select the expression to keep.
+        guard text.count <= 160, !text.contains("\n") else { return "" }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var vocabularyEntry: LearningVocabularyEntry? {
+        settings.learningVocabularyEntry(for: vocabularyTerm)
+    }
+
+    private func clearVocabularySelection() {
+        vocabularySelection = ""
+        vocabularySelectionContext = ""
+        vocabularySelectionProviderID = ""
+        vocabularySelectionUsesTranslation = false
+    }
+
+    private func updateVocabularySelection(_ selection: String, context: String,
+                                           providerID: String, usesTranslation: Bool) {
+        // An inactive text view clearing its selection must not erase a newer selection.
+        if selection.isEmpty {
+            guard vocabularySelectionUsesTranslation == usesTranslation,
+                  vocabularySelectionContext == context,
+                  !usesTranslation || vocabularySelectionProviderID == providerID else { return }
+            clearVocabularySelection()
+            return
+        }
+        vocabularySelection = selection
+        vocabularySelectionContext = context
+        vocabularySelectionProviderID = providerID
+        vocabularySelectionUsesTranslation = usesTranslation
+    }
+
+    private func presentVocabularyEditor() {
+        let term = vocabularyTerm
+        guard !term.isEmpty else { return }
+        let entry = vocabularyEntry
+        let usesWholeSource = !vocabularySelectionUsesTranslation
+            && term == state.committedSourceTrimmed && !state.isSourceDirty
+        vocabularyDraft = WorkspaceVocabularyDraft(
+            entryID: entry?.id,
+            term: entry?.term ?? term,
+            meaning: entry?.meaning ?? (usesWholeSource ? state.primaryActionTranslatedText : ""),
+            sourceSentence: entry?.sourceSentence ?? (vocabularySelection.isEmpty
+                ? state.sourceDraftTrimmed : vocabularySelectionContext),
+            providerID: vocabularySelectionProviderID.isEmpty
+                ? (state.primarySuccessfulOutcome?.providerId ?? "") : vocabularySelectionProviderID,
+            usesTranslation: vocabularySelectionUsesTranslation
+        )
     }
 
     private func copy(_ text: String) {
@@ -543,6 +669,16 @@ struct ResultView: View {
     }
 
 
+}
+
+private struct WorkspaceVocabularyDraft: Identifiable {
+    let id = UUID()
+    let entryID: String?
+    let term: String
+    let meaning: String
+    let sourceSentence: String
+    let providerID: String
+    let usesTranslation: Bool
 }
 
 enum TranslationSlot: Identifiable {
@@ -803,7 +939,7 @@ private struct SourceComposerTextView: NSViewRepresentable {
         textView.importsGraphics = false
         textView.allowsUndo = true
         textView.drawsBackground = false
-        textView.font = NSFont.systemFont(ofSize: 14)
+        textView.font = Theme.Font.readingNSFont
         textView.textColor = .labelColor
         textView.insertionPointColor = .controlAccentColor
         textView.textContainerInset = NSSize(width: 0, height: 6)
@@ -824,7 +960,7 @@ private struct SourceComposerTextView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? CommandAwareTextView else { return }
         textView.onReturn = onReturn
-        textView.font = NSFont.systemFont(ofSize: 14)
+        textView.font = Theme.Font.readingNSFont
         textView.textColor = .labelColor
         if textView.string != text {
             textView.string = text
@@ -992,6 +1128,7 @@ private struct TranslationOutcomeCard: View {
     let onCopy: (String) -> Void
     let onCopyAndReturn: ((String) -> Void)?
     let onReplaceInSourceApp: ((String) -> Void)?
+    let onSelectionChange: (String) -> Void
     let onRetry: () -> Void
     let onConfigure: () -> Void
 
@@ -1047,7 +1184,7 @@ private struct TranslationOutcomeCard: View {
                 }
             }
             if let result = outcome.result {
-                TranslationBody(result: result, lineLimit: nil)
+                TranslationBody(result: result, lineLimit: nil, onSelectionChange: onSelectionChange)
                 HStack(spacing: Theme.Spacing.s8) {
                     Spacer(minLength: 0)
                     if let onCopyAndReturn {
@@ -1302,7 +1439,7 @@ private struct TranslationBody: View {
             } else {
                 Text(result.translated)
                     .font(Theme.Font.result)
-                    .lineSpacing(4)
+                    .lineSpacing(Theme.Font.readingLineSpacing)
                     .foregroundStyle(Theme.Palette.label)
                     .textSelection(.enabled)
                     .lineLimit(lineLimit)
@@ -1355,7 +1492,7 @@ private struct SelectableResultTextView: NSViewRepresentable {
         textView.setContentHuggingPriority(.required, for: .vertical)
         textView.setContentCompressionResistancePriority(.required, for: .vertical)
         textView.setAccessibilityElement(true)
-        textView.setAccessibilityLabel(L("译文，可选择表达加入学习"))
+        textView.setAccessibilityLabel(L("译文，可选择单词加入单词本"))
         textView.string = text
         configure(textView)
         return textView
@@ -1384,6 +1521,12 @@ private struct SelectableResultTextView: NSViewRepresentable {
             sizingTextView.lineLimit = lineLimit
         }
         textView.textContainerInset = Self.textContainerInset
+        textView.defaultParagraphStyle = Self.paragraphStyle
+        textView.textStorage?.addAttribute(
+            .paragraphStyle,
+            value: Self.paragraphStyle,
+            range: NSRange(location: 0, length: (textView.string as NSString).length)
+        )
         textView.textContainer?.maximumNumberOfLines = lineLimit ?? 0
         textView.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
         textView.textContainer?.containerSize = NSSize(
@@ -1396,7 +1539,13 @@ private struct SelectableResultTextView: NSViewRepresentable {
     private static let measurementWidthSafety: CGFloat = 18
 
     private static var font: NSFont {
-        NSFont.systemFont(ofSize: 15)
+        Theme.Font.readingNSFont
+    }
+
+    private static var paragraphStyle: NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = Theme.Font.readingLineSpacing
+        return style
     }
 
     private static func resolvedWidth(proposed: CGFloat? = nil, bounds: CGFloat? = nil) -> CGFloat {
@@ -1413,7 +1562,7 @@ private struct SelectableResultTextView: NSViewRepresentable {
     }
 
     private static func measuredHeight(for text: String, width: CGFloat, lineLimit: Int?) -> CGFloat {
-        let textStorage = NSTextStorage(string: text, attributes: [.font: font])
+        let textStorage = NSTextStorage(string: text, attributes: [.font: font, .paragraphStyle: paragraphStyle])
         let layoutManager = NSLayoutManager()
         let textContainer = NSTextContainer(containerSize: NSSize(
             width: textContainerWidth(for: width),

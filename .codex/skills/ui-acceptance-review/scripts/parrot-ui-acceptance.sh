@@ -361,13 +361,22 @@ guard AXIsProcessTrusted() else {
 }
 
 let app = AXUIElementCreateApplication(pid)
-let requiredMenuItems = ["Input Translation", "View History", "Settings...", "Quit Parrot"]
+let requiredMenuItems = ["Input Translation", "View History", "Wordbook", "Settings...", "Quit Parrot"]
 for name in requiredMenuItems {
     guard menuItem(named: name, in: app) != nil else {
         fail("missing App menu fallback item: \(name)")
     }
 }
 print("INFO: menu fallback entries found")
+
+if let wordbook = menuItem(named: "Wordbook", in: app) {
+    press(wordbook, name: "Wordbook")
+    guard let wordbookWindow = waitForWindow(named: "Wordbook", in: app),
+          button(named: "Add Word", in: wordbookWindow) != nil else {
+        fail("wordbook did not expose its add action")
+    }
+    print("INFO: wordbook menu route and add action passed")
+}
 
 if let settings = menuItem(named: "Settings...", in: app) {
     press(settings, name: "Settings...")

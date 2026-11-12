@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 — 2026-11-12
+
+- Open the Wordbook from the translation workspace, the menu bar, or the app menu. Save a word or expression with its translation and original sentence.
+- Search, filter, and edit saved entries. Renaming an entry to an existing term merges the two and keeps the review progress. Undo an accidental removal from the Wordbook.
+- Show the full saved collection, including entries beyond the previous 80-item limit.
+- Use consistent text styles across the translation workspace, history, and settings. Hide the unfinished Plugins settings entry.
+
 ## 0.1.4 — 2026-10-23
 
 ### Changed

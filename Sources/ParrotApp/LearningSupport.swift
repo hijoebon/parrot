@@ -393,7 +393,9 @@ enum LearningRecommendationEngine {
         includeHistoryRecommendations: Bool = false,
         limit: Int = 80
     ) -> [LearningVocabularyItem] {
-        let entriesByID = Dictionary(uniqueKeysWithValues: vocabularyEntries.map { ($0.id, $0) })
+        let entriesByID = Dictionary(vocabularyEntries.map { ($0.id, $0) }, uniquingKeysWith: {
+            $0.updatedAt >= $1.updatedAt ? $0 : $1
+        })
         var byID: [String: LearningVocabularyItem] = [:]
         if includeHistoryRecommendations {
             for record in records {
@@ -415,7 +417,7 @@ enum LearningRecommendationEngine {
             }
         }
 
-        for entry in vocabularyEntries where byID[entry.id] == nil {
+        for entry in entriesByID.values where byID[entry.id] == nil {
             byID[entry.id] = vocabularyItem(expression: expression(from: entry, fallback: nil), entry: entry)
         }
 
@@ -474,9 +476,12 @@ enum LearningRecommendationEngine {
     }
 
     static func key(for term: String) -> String {
-        term.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        normalizedVocabularyTerm(term).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .lowercased()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func normalizedVocabularyTerm(_ term: String) -> String {
+        term.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     static func containsTerm(_ term: String, in text: String) -> Bool {
@@ -777,10 +782,10 @@ enum LearningRecommendationEngine {
 
     private static func nextReviewLabel(for expression: LearningExpression) -> String {
         switch expression.masteryStage {
-        case 1, 2: return "今天"
-        case 3: return "明天"
-        case 4: return "3 天"
-        default: return "6 天"
+        case 1, 2: return L("今天")
+        case 3: return L("明天")
+        case 4: return L("%d 天", 3)
+        default: return L("%d 天", 6)
         }
     }
 
@@ -793,15 +798,15 @@ enum LearningRecommendationEngine {
         }
         let calendar = Calendar.current
         if nextReviewAt <= Date() || calendar.isDateInToday(nextReviewAt) {
-            return "今天"
+            return L("今天")
         }
         if calendar.isDateInTomorrow(nextReviewAt) {
-            return "明天"
+            return L("明天")
         }
         let start = calendar.startOfDay(for: Date())
         let end = calendar.startOfDay(for: nextReviewAt)
         let days = max(1, calendar.dateComponents([.day], from: start, to: end).day ?? 1)
-        return "\(days) 天"
+        return L("%d 天", days)
     }
 
     private static func sceneLabel(for expression: LearningExpression) -> String {
@@ -1123,7 +1128,7 @@ struct LearningContextCard: View {
                     .foregroundStyle(Theme.Palette.label3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(expression.term)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(Theme.Font.term)
                         .foregroundStyle(Theme.Palette.label)
                     if !metaText.isEmpty {
                         Text(metaText)
@@ -1188,7 +1193,7 @@ struct LearningContextCard: View {
                 .font(Theme.Font.caption)
                 .foregroundStyle(Theme.Palette.label3)
             Text(expression.meaning)
-                .font(.system(size: 15, weight: .semibold))
+                .font(Theme.Font.body.weight(.medium))
                 .foregroundStyle(Theme.Palette.label)
                 .fixedSize(horizontal: false, vertical: true)
         }

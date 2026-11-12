@@ -420,7 +420,8 @@ private struct HistoryDetail: View {
                         .font(Theme.Font.caption.weight(.semibold))
                         .foregroundStyle(Theme.Palette.label3)
                     Text(outcome.translated)
-                        .font(Theme.Font.body)
+                        .font(Theme.Font.result)
+                        .lineSpacing(Theme.Font.readingLineSpacing)
                         .foregroundStyle(Theme.Palette.label)
                         .textSelection(.enabled)
                     if shouldShowIntendedMeaning(interpretation) {
@@ -438,6 +439,7 @@ private struct HistoryDetail: View {
             } else {
                 Text(outcome.translated)
                     .font(Theme.Font.result)
+                    .lineSpacing(Theme.Font.readingLineSpacing)
                     .foregroundStyle(Theme.Palette.label)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)

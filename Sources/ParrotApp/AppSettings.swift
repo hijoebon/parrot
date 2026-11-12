@@ -267,9 +267,9 @@ final class AppSettings: ObservableObject {
         sourceSentence rawSourceSentence: String = "",
         sceneLabel rawSceneLabel: String = "手动添加"
     ) -> String? {
-        let term = rawTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        let term = LearningRecommendationEngine.normalizedVocabularyTerm(rawTerm)
         guard !term.isEmpty else { return nil }
-        let id = LearningRecommendationEngine.key(for: term)
+        let id = learningVocabularyEntry(for: term)?.id ?? LearningRecommendationEngine.key(for: term)
         let now = Date()
         let meaning = rawMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
         let sourceSentence = rawSourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -299,6 +299,107 @@ final class AppSettings: ObservableObject {
             )
         }
         return id
+    }
+
+    func learningVocabularyEntry(for term: String) -> LearningVocabularyEntry? {
+        let key = LearningRecommendationEngine.key(for: term)
+        guard !key.isEmpty else { return nil }
+        return learningVocabularyEntries.first {
+            $0.id == key || LearningRecommendationEngine.key(for: $0.term) == key
+        }
+    }
+
+    /// Editing a term changes its lookup identity while retaining its learning history.
+    /// If the new term already exists, the two entries become one saved word.
+    @discardableResult
+    func updateLearningVocabularyEntry(
+        _ id: String,
+        term rawTerm: String,
+        meaning rawMeaning: String,
+        sourceSentence rawSourceSentence: String
+    ) -> String? {
+        let term = LearningRecommendationEngine.normalizedVocabularyTerm(rawTerm)
+        guard !term.isEmpty,
+              let original = learningVocabularyEntries.first(where: { $0.id == id }) else { return nil }
+        let existing = learningVocabularyEntry(for: term)
+        let newID = existing?.id ?? LearningRecommendationEngine.key(for: term)
+        let merged = existing.map { Self.mergingVocabularyMetadata(original, with: $0) } ?? original
+        var meaning = rawMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sourceSentence = rawSourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing, existing.id != original.id {
+            meaning = Self.combiningVocabularyNotes(meaning, with: existing.meaning)
+            sourceSentence = Self.combiningVocabularyNotes(sourceSentence, with: existing.sourceSentence)
+        }
+        let updated = LearningVocabularyEntry(
+            id: newID,
+            term: term,
+            meaning: meaning,
+            sourceSentence: sourceSentence,
+            sceneLabel: merged.sceneLabel,
+            occurrenceCount: merged.occurrenceCount,
+            masteryStage: merged.masteryStage,
+            wrongCount: merged.wrongCount,
+            isFavorite: merged.isFavorite,
+            isManual: true,
+            savedAt: merged.savedAt,
+            updatedAt: Date(),
+            lastReviewedAt: merged.lastReviewedAt,
+            nextReviewAt: merged.nextReviewAt
+        )
+        var entries = learningVocabularyEntries.filter { $0.id != id && $0.id != newID }
+        entries.append(updated)
+        learningVocabularyEntries = entries
+        let wasMastered = learningMasteredExpressionIDs.contains(id)
+            || learningMasteredExpressionIDs.contains(newID)
+        learningSavedExpressionIDs.removeAll { $0 == id && $0 != newID }
+        learningMasteredExpressionIDs.removeAll { $0 == id && $0 != newID }
+        markLearningSaved(newID)
+        if wasMastered || updated.masteryStage >= 5 { markLearningMastered(newID) }
+        return newID
+    }
+
+    private static func combiningVocabularyNotes(_ edited: String, with saved: String) -> String {
+        let saved = saved.trimmingCharacters(in: .whitespacesAndNewlines)
+        if edited.isEmpty { return saved }
+        if saved.isEmpty || edited == saved { return edited }
+        return edited + "\n\n" + saved
+    }
+
+    func restoreLearningVocabularyEntry(_ entry: LearningVocabularyEntry) {
+        var entries = learningVocabularyEntries
+        let restoredID: String
+        if let index = entries.firstIndex(where: {
+            $0.id == entry.id || LearningRecommendationEngine.key(for: $0.term) == LearningRecommendationEngine.key(for: entry.term)
+        }) {
+            entries[index] = Self.mergingVocabularyMetadata(entries[index], with: entry)
+            restoredID = entries[index].id
+        } else {
+            entries.append(entry)
+            restoredID = entry.id
+        }
+        learningVocabularyEntries = entries
+        markLearningSaved(restoredID)
+        if entry.masteryStage >= 5 { markLearningMastered(restoredID) }
+    }
+
+    private static func mergingVocabularyMetadata(
+        _ entry: LearningVocabularyEntry,
+        with other: LearningVocabularyEntry
+    ) -> LearningVocabularyEntry {
+        var merged = entry
+        if merged.meaning.isEmpty { merged.meaning = other.meaning }
+        if merged.sourceSentence.isEmpty { merged.sourceSentence = other.sourceSentence }
+        if merged.sceneLabel.isEmpty { merged.sceneLabel = other.sceneLabel }
+        merged.occurrenceCount = max(entry.occurrenceCount, other.occurrenceCount)
+        merged.masteryStage = max(entry.masteryStage, other.masteryStage)
+        merged.wrongCount = max(entry.wrongCount, other.wrongCount)
+        merged.isFavorite = entry.isFavorite || other.isFavorite
+        merged.isManual = entry.isManual || other.isManual
+        merged.savedAt = min(entry.savedAt, other.savedAt)
+        merged.updatedAt = max(entry.updatedAt, other.updatedAt)
+        merged.lastReviewedAt = [entry.lastReviewedAt, other.lastReviewedAt].compactMap { $0 }.max()
+        merged.nextReviewAt = [entry.nextReviewAt, other.nextReviewAt].compactMap { $0 }.min()
+        return merged
     }
 
     func toggleLearningVocabularyFavorite(_ id: String) {

@@ -1652,7 +1652,8 @@ final class AppState: ObservableObject {
             records: learningHistoryRecords,
             occurrenceCounts: learningOccurrenceCounts,
             vocabularyEntries: settings.learningVocabularyEntries,
-            includeHistoryRecommendations: false
+            includeHistoryRecommendations: false,
+            limit: Int.max
         )
     }
 
@@ -1676,13 +1677,13 @@ final class AppState: ObservableObject {
         translatedText: String,
         sceneLabel: String = "工作区表达"
     ) -> Bool {
-        let source = actionSourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = (committedSourceTrimmed.isEmpty ? actionSourceText : committedSourceTrimmed)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let translated = translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty || !translated.isEmpty else { return false }
         let termSource = source.isEmpty ? translated : source
-        let term = Self.displaySnippet(termSource, limit: 160)
         let savedID = settings.addLearningVocabularyTerm(
-            term: term,
+            term: termSource,
             meaning: translated,
             sourceSentence: source,
             sceneLabel: sceneLabel

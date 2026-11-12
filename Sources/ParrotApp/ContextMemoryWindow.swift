@@ -74,7 +74,7 @@ private struct ContextMemoryView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(L("规则记忆"))
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(Theme.Font.pageTitle)
                     .foregroundStyle(Theme.Palette.label)
                 Text(L("让不同来源自动进入合适的翻译方式。"))
                     .font(Theme.Font.callout)
@@ -178,7 +178,7 @@ private struct ContextMemoryView: View {
 
     private func sectionTitle(_ text: String) -> some View {
         Text(L(text))
-            .font(.system(size: 15, weight: .semibold))
+            .font(Theme.Font.sectionTitle)
             .foregroundStyle(Theme.Palette.label)
     }
 

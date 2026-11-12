@@ -151,12 +151,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(appCommand("输入翻译", action: #selector(showInput), key: ""))
         appMenu.addItem(appCommand("聚焦源文", action: #selector(focusSourceComposer), key: "l"))
         appMenu.addItem(appCommand("查看历史", action: #selector(showHistory), key: ""))
+        appMenu.addItem(appCommand("单词本", action: #selector(showVocabulary), key: ""))
         if state.settings.advancedFeaturesEnabled {
             let toolsItem = NSMenuItem(title: L("更多工具"), action: nil, keyEquivalent: "")
             let toolsMenu = NSMenu(title: L("更多工具"))
             toolsMenu.addItem(appCommand("输入润色", action: #selector(showPolishInput), key: ""))
             toolsMenu.addItem(appCommand("今日复习", action: #selector(showLearningReview), key: ""))
-            toolsMenu.addItem(appCommand("个人词库", action: #selector(showVocabulary), key: ""))
             toolsMenu.addItem(appCommand("规则记忆", action: #selector(showContextMemory), key: ""))
             toolsItem.submenu = toolsMenu
             appMenu.addItem(toolsItem)

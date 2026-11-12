@@ -1278,7 +1278,7 @@ struct SettingsView: View {
         HStack(alignment: .top, spacing: Theme.Spacing.s16) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(L("密钥"))
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(Theme.Font.pageTitle)
                     .foregroundStyle(Theme.Palette.label)
                 Text(L("密钥、模型和服务地址在保存后生效。"))
                     .font(Theme.Font.body)
@@ -1399,7 +1399,7 @@ struct SettingsView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L("选择服务"))
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(Theme.Font.sectionTitle)
                         .foregroundStyle(Theme.Palette.label)
                     Text(L("选择要添加或配置的服务。"))
                         .font(Theme.Font.callout)
@@ -1550,7 +1550,7 @@ struct SettingsView: View {
                 Image(systemName: descriptor.id == "ollama" ? "desktopcomputer" : "network")
                     .font(.system(size: 22)).foregroundStyle(Theme.Palette.label2)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(descriptor.name).font(.system(size: 16, weight: .semibold))
+                    Text(descriptor.name).font(Theme.Font.sectionTitle)
                     Text(dirty ? L("当前为未保存草稿，测试不会修改生效配置。") : status.configured ? L("配置已保存，连接状态以测试结果为准。") : L("填写服务配置后，可先测试再保存。"))
                         .font(Theme.Font.caption).foregroundStyle(Theme.Palette.label2)
                 }
@@ -1885,7 +1885,7 @@ struct SettingsView: View {
     // MARK: - Row builders
 
     private func sectionTitle(_ t: String) -> some View {
-        Text(L(t)).font(.system(size: 22, weight: .medium))
+        Text(L(t)).font(Theme.Font.pageTitle)
             .foregroundStyle(Theme.Palette.label)
             .padding(.bottom, Theme.Spacing.s20)
     }

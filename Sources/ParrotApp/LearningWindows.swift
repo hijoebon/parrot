@@ -61,7 +61,7 @@ final class VocabularyWindow {
             win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             win.isReleasedWhenClosed = false
             win.setContentSize(NSSize(width: 900, height: 540))
-            win.contentMinSize = NSSize(width: 760, height: 460)
+            win.contentMinSize = NSSize(width: 700, height: 460)
             window = win
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -78,7 +78,7 @@ final class VocabularyWindow {
     }
 
     private func configureTitle(for window: NSWindow) {
-        let title = L("个人词库")
+        let title = L("单词本")
         window.title = title
         window.setAccessibilityTitle(title)
     }
@@ -237,7 +237,7 @@ private struct LearningReviewView: View {
                         FrequencyBadge(count: card.expression.occurrenceCount)
                     }
                     Text(card.title)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(Theme.Font.term)
                         .foregroundStyle(Theme.Palette.label)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(card.prompt)
@@ -369,16 +369,26 @@ private struct VocabularyView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: AppSettings
 
-    enum Scope: String, CaseIterable, Identifiable {
-        case all, saved, due, mastered, favorites
+    private enum Scope: String, CaseIterable, Identifiable {
+        case all, favorites, due
         var id: String { rawValue }
         var title: String {
             switch self {
             case .all: return "全部"
-            case .saved: return "已加入"
-            case .due: return "待复习"
-            case .mastered: return "已掌握"
             case .favorites: return "收藏"
+            case .due: return "待复习"
+            }
+        }
+    }
+
+    private enum Editor: Identifiable {
+        case add
+        case edit(LearningVocabularyEntry)
+
+        var id: String {
+            switch self {
+            case .add: return "add"
+            case .edit(let entry): return entry.id
             }
         }
     }
@@ -386,411 +396,422 @@ private struct VocabularyView: View {
     @State private var query = ""
     @State private var scope: Scope = .all
     @State private var selectedID: String?
-    @State private var showAddSheet = false
-    @State private var newTerm = ""
-    @State private var newMeaning = ""
-    @State private var newSourceSentence = ""
+    @State private var editor: Editor?
     @State private var cachedItems: [LearningVocabularyItem] = []
+    @State private var removedEntries: [LearningVocabularyEntry] = []
 
     init(state: AppState) {
         self.state = state
         self.settings = state.settings
     }
 
-    private func filteredItems(from allItems: [LearningVocabularyItem]) -> [LearningVocabularyItem] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return allItems.filter { item in
-            if scope == .saved && !item.isSaved { return false }
+    private var visibleItems: [LearningVocabularyItem] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cachedItems.filter { item in
             if scope == .due && !item.isDue { return false }
-            if scope == .mastered && item.expression.masteryStage < 4 { return false }
             if scope == .favorites && !item.isFavorite { return false }
             guard !q.isEmpty else { return true }
-            return item.expression.term.lowercased().contains(q)
-                || item.expression.meaning.lowercased().contains(q)
-                || item.sceneLabel.lowercased().contains(q)
-                || item.expression.sourceSentence.lowercased().contains(q)
+            return [item.expression.term, item.entry?.meaning ?? "", item.entry?.sourceSentence ?? ""]
+                .contains { $0.localizedStandardContains(q) }
         }
     }
 
-    private func selectedItem(in items: [LearningVocabularyItem]) -> LearningVocabularyItem? {
-        if let selectedID,
-           let item = items.first(where: { $0.id == selectedID }) {
-            return item
-        }
-        return items.first
+    private var selectedItem: LearningVocabularyItem? {
+        visibleItems.first { $0.id == selectedID }
     }
 
     var body: some View {
-        let visibleItems = filteredItems(from: cachedItems)
-        let resolvedSelection = selectedItem(in: visibleItems)
-        HStack(spacing: 0) {
-            listColumn(items: visibleItems, currentSelectedID: resolvedSelection?.id)
-            Divider()
-            detailColumn(item: resolvedSelection, allItems: cachedItems)
+        VStack(spacing: 0) {
+            HSplitView {
+                listColumn
+                    .frame(minWidth: 270, idealWidth: 300, maxWidth: 370)
+                detailColumn
+                    .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if let removedEntry = removedEntries.last {
+                Divider()
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                    Text(L("已移除 %@", removedEntry.term))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button(L("撤销"), action: undoRemoval)
+                        .accessibilityIdentifier("vocabulary.undo")
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(.bar)
+            }
         }
-        .frame(minWidth: 760, minHeight: 460)
+        .frame(minWidth: 700, minHeight: 460)
         .onAppear {
-            state.refreshLearningHistory()
             reloadVocabularyItems()
-            reconcileSelection(in: filteredItems(from: cachedItems))
+            reconcileSelection()
         }
         .onChange(of: settings.learningVocabularyEntries) { _ in
             reloadVocabularyItems()
-            reconcileSelection(in: filteredItems(from: cachedItems))
+            reconcileSelection()
         }
-        .onChange(of: visibleItems.map(\.id)) { _ in
-            reconcileSelection(in: visibleItems)
-        }
-        .sheet(isPresented: $showAddSheet) {
-            addVocabularySheet
+        .onChange(of: visibleItems.map(\.id)) { _ in reconcileSelection() }
+        .sheet(item: $editor) { mode in
+            switch mode {
+            case .add:
+                VocabularyEntryEditor(
+                    title: "添加单词",
+                    term: "",
+                    meaning: "",
+                    sourceSentence: "",
+                    onCancel: { editor = nil },
+                    onSave: { term, meaning, source in
+                        let id = settings.addLearningVocabularyTerm(term: term, meaning: meaning, sourceSentence: source)
+                        if let id { finishSave(id) }
+                        return id
+                    }
+                )
+            case .edit(let entry):
+                VocabularyEntryEditor(
+                    title: "编辑单词",
+                    term: entry.term,
+                    meaning: entry.meaning,
+                    sourceSentence: entry.sourceSentence,
+                    onCancel: { editor = nil },
+                    onSave: { term, meaning, source in
+                        let id = settings.updateLearningVocabularyEntry(entry.id, term: term, meaning: meaning, sourceSentence: source)
+                        if let id { finishSave(id) }
+                        return id
+                    }
+                )
+            }
         }
     }
 
-    private func reloadVocabularyItems() {
-        cachedItems = state.learningVocabularyItems
-    }
-
-    private func reconcileSelection(in items: [LearningVocabularyItem]) {
-        if selectedID == nil || !items.contains(where: { $0.id == selectedID }) {
-            selectedID = items.first?.id
-        }
-    }
-
-    private func listColumn(items: [LearningVocabularyItem], currentSelectedID: String?) -> some View {
+    private var listColumn: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.Palette.label3)
-                    TextField(L("搜索表达或来源句"), text: $query)
-                        .textFieldStyle(.plain)
-                        .font(Theme.Font.body)
+            HStack {
+                Text(L("单词本"))
+                    .font(.system(size: 16, weight: .semibold))
+                Text("\(cachedItems.count)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer()
+                Button { editor = .add } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(width: 25, height: 25)
+                        .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 30)
-                .background(Theme.Palette.bgControl)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                IconButton("plus", help: "添加表达", size: 12) {
-                    showAddSheet = true
+                .buttonStyle(.borderless)
+                .help(L("添加单词"))
+                .accessibilityLabel(L("添加单词"))
+                .accessibilityIdentifier("vocabulary.add")
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField(L("搜索单词、释义或原句"), text: $query)
+                    .textFieldStyle(.plain)
+                    .accessibilityIdentifier("vocabulary.search")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L("清除搜索"))
+                    .accessibilityLabel(L("清除搜索"))
                 }
             }
-            .padding(10)
+            .font(.system(size: 12))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
 
-            Picker("", selection: $scope) {
+            Picker(L("筛选单词"), selection: $scope) {
                 ForEach(Scope.allCases) { scope in
-                    Text(scope.title).tag(scope)
+                    Text(L(scope.title)).tag(scope)
                 }
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
 
-            if items.isEmpty {
-                emptyVocabularyList
+            if visibleItems.isEmpty {
+                emptyList
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(items) { item in
-                            Button {
-                                selectedID = item.id
-                            } label: {
-                                VocabularyRow(data: VocabularyRowData(item: item), selected: currentSelectedID == item.id)
-                                    .equatable()
-                                    .contentShape(Rectangle())
+                List(selection: $selectedID) {
+                    ForEach(visibleItems) { item in
+                        VocabularyRow(item: item)
+                            .tag(item.id)
+                            .contextMenu {
+                                if let entry = item.entry {
+                                    Button(L("编辑单词")) { editor = .edit(entry) }
+                                    Button(item.isFavorite ? L("取消收藏") : L("收藏")) {
+                                        settings.toggleLearningVocabularyFavorite(item.id)
+                                    }
+                                    Divider()
+                                    Button(L("移除单词")) { remove(item) }
+                                }
                             }
-                            .buttonStyle(.plain)
-                        }
                     }
-                    .padding(.horizontal, Theme.Spacing.s8)
-                    .padding(.bottom, Theme.Spacing.s8)
                 }
+                .listStyle(.inset)
+                .accessibilityIdentifier("vocabulary.list")
             }
         }
-        .frame(width: 300)
-        .background(Theme.Palette.bgSidebar)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var emptyVocabularyList: some View {
-        VStack(spacing: Theme.Spacing.s8) {
-            Image(systemName: "text.book.closed")
-                .font(.system(size: 30))
-                .foregroundStyle(Theme.Palette.label3)
-            Text(L("暂无词库记录"))
-                .font(Theme.Font.callout)
-                .foregroundStyle(Theme.Palette.label2)
-            Text(L("加入或手动添加表达后会出现在这里。"))
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.label3)
+    private var emptyList: some View {
+        VStack(spacing: 9) {
+            Image(systemName: query.isEmpty ? "text.book.closed" : "magnifyingglass")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(L(emptyTitle))
+                .font(.system(size: 13, weight: .medium))
+            Text(L(emptyDescription))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if cachedItems.isEmpty && query.isEmpty {
+                Button(L("添加单词")) { editor = .add }
+                    .padding(.top, 3)
+            }
         }
-        .padding(Theme.Spacing.s20)
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var emptyTitle: String {
+        if !query.isEmpty { return "没有找到匹配的单词" }
+        if scope == .favorites { return "还没有收藏" }
+        if scope == .due, !cachedItems.isEmpty { return "暂时没有待复习单词" }
+        return "留下想记住的单词"
+    }
+
+    private var emptyDescription: String {
+        if !query.isEmpty { return "试试其他关键词，或清除搜索。" }
+        if scope == .favorites { return "点亮单词旁的星标，方便以后找到。" }
+        if scope == .due, !cachedItems.isEmpty { return "到复习时间的单词会出现在这里。" }
+        return "在翻译结果中加入，或点上方的 + 手动添加。"
+    }
+
     @ViewBuilder
-    private func detailColumn(item: LearningVocabularyItem?, allItems: [LearningVocabularyItem]) -> some View {
-        if let item {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
-                    metrics(allItems: allItems)
-                    vocabularyDetail(item)
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(Theme.Palette.bgCanvas)
+    private var detailColumn: some View {
+        if let item = selectedItem {
+            vocabularyDetail(item)
         } else {
-            VStack(spacing: Theme.Spacing.s8) {
+            VStack(spacing: 10) {
                 Image(systemName: "text.book.closed")
-                    .font(.system(size: 34))
-                    .foregroundStyle(Theme.Palette.label3)
-                Text(L("选择左侧表达查看详情"))
-                    .font(Theme.Font.callout)
-                    .foregroundStyle(Theme.Palette.label2)
+                    .font(.system(size: 38, weight: .ultraLight))
+                    .foregroundStyle(.tertiary)
+                Text(L(cachedItems.isEmpty ? "你的单词，会留在这里" : "选择一个单词"))
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.Palette.bgCanvas)
+            .background(Color(nsColor: .textBackgroundColor))
         }
-    }
-
-    private func metrics(allItems: [LearningVocabularyItem]) -> some View {
-        let entries = settings.learningVocabularyEntries
-        let weekStart = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let weekNewCount = entries.filter { $0.savedAt >= weekStart }.count
-        let dueCount = allItems.filter(\.isDue).count
-        let masteredCount = allItems.filter { $0.expression.masteryStage >= 4 }.count
-        let repeatedCount = entries.filter { $0.wrongCount >= 2 }.count
-        let searchReduction = min(36, max(0, masteredCount * 3 + allItems.count / 8))
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 10)], spacing: 10) {
-            metricTile("\(allItems.count)", "已沉淀表达")
-            metricTile("\(weekNewCount)", "本周新增")
-            metricTile("\(masteredCount)", "已掌握")
-            metricTile("\(dueCount)", "今日待复习")
-            metricTile("\(repeatedCount)", "反复遗忘")
-            metricTile("\(searchReduction)%", "预计少查词")
-        }
-    }
-
-    private func metricTile(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.system(size: 20, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(Theme.Palette.label)
-            Text(L(label))
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.label2)
-        }
-        .padding(Theme.Spacing.s12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.Palette.bgContent)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card).strokeBorder(Theme.Palette.hairline, lineWidth: 0.5))
     }
 
     private func vocabularyDetail(_ item: LearningVocabularyItem) -> some View {
         let expression = item.expression
-        let sourceLabel = item.isSaved ? L("个人词库") : L("历史推荐")
-        return VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
-            HStack(alignment: .top, spacing: Theme.Spacing.s12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(expression.term)
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(Theme.Palette.label)
-                    Text("\(L(expression.kind)) · \(expression.displayCount) · \(L(item.sceneLabel)) · \(sourceLabel)")
-                        .font(Theme.Font.callout)
-                        .foregroundStyle(Theme.Palette.label2)
-                }
-                Spacer()
-                FrequencyBadge(count: expression.occurrenceCount)
-                IconButton(item.isFavorite ? "star.fill" : "star", help: item.isFavorite ? "取消收藏" : "收藏", foreground: item.isFavorite ? Theme.Palette.star : nil) {
-                    saveIfNeeded(item)
-                    settings.toggleLearningVocabularyFavorite(item.id)
-                }
-                IconButton("speaker.wave.2", help: "朗读") {
-                    state.speakTranslation(expression.term)
-                }
-            }
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Text(expression.masteryText)
-                    Spacer()
-                    Text(L("下次复习：%@", item.nextReviewLabel))
-                }
-                .font(Theme.Font.caption)
-                .foregroundStyle(Theme.Palette.label3)
-                ProgressView(value: expression.masteryProgress)
-                    .tint(Theme.Palette.accent)
-            }
-            HStack(alignment: .top, spacing: 10) {
-                detailSection("语境释义", expression.meaning)
-                detailSection("常见搭配", expression.pairs.map { "\($0.0) / \($0.1)" }.joined(separator: "\n"))
-            }
-            Text(expression.sourceSentence)
-                .font(Theme.Font.callout)
-                .foregroundStyle(Theme.Palette.label2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, Theme.Spacing.s8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .top) { Divider() }
-            HStack(spacing: Theme.Spacing.s8) {
-                if item.wrongCount > 0 {
-                    LearningWindowTag(L("错过 %d 次", item.wrongCount))
-                }
+        let meaning = item.entry?.meaning ?? ""
+        let sourceSentence = item.entry?.sourceSentence ?? ""
+        return VStack(spacing: 0) {
+            HStack(spacing: 16) {
                 Spacer()
                 Button {
-                    if item.isSaved {
-                        let fallbackID = filteredItems(from: cachedItems).first { $0.id != item.id }?.id
-                        settings.removeLearningVocabularyEntry(item.id)
-                        selectedID = fallbackID
-                    } else {
-                        saveIfNeeded(item)
-                    }
+                    settings.toggleLearningVocabularyFavorite(item.id)
                 } label: {
-                    Text(item.isSaved ? L("移出词库") : L("加入词库"))
-                        .font(Theme.Font.callout)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 30)
-                        .contentShape(Rectangle())
+                    Image(systemName: item.isFavorite ? "star.fill" : "star")
+                        .foregroundStyle(item.isFavorite ? Color(nsColor: .systemYellow) : .secondary)
                 }
-                .buttonStyle(.borderless)
-                Button(item.expression.masteryStage >= 5 ? L("已掌握") : L("标记掌握")) {
-                    settings.markLearningMastered(item.expression, sceneLabel: item.sceneLabel)
+                .help(L(item.isFavorite ? "取消收藏" : "收藏"))
+                .accessibilityLabel(L(item.isFavorite ? "取消收藏" : "收藏"))
+                .accessibilityIdentifier("vocabulary.favorite")
+                Button {
+                    state.speakTranslation(expression.term)
+                } label: {
+                    Image(systemName: "speaker.wave.2")
                 }
-                .buttonStyle(PrimaryActionButtonStyle())
+                .help(L("朗读"))
+                .accessibilityLabel(L("朗读"))
+                Button(L("编辑")) {
+                    if let entry = item.entry { editor = .edit(entry) }
+                }
+                .accessibilityIdentifier("vocabulary.edit")
             }
-        }
-        .padding(16)
-        .background(Theme.Palette.bgContent)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.group))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.group).strokeBorder(Theme.Palette.hairline, lineWidth: 0.5))
-    }
+            .buttonStyle(.borderless)
+            .font(.system(size: 13))
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
 
-    private func detailSection(_ title: String, _ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(L(title))
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.Palette.label2)
-            Text(L(text))
-                .font(Theme.Font.body)
-                .foregroundStyle(Theme.Palette.label)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(Theme.Spacing.s12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.Palette.bgContent)
-        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card).strokeBorder(Theme.Palette.hairline, lineWidth: 0.5))
-    }
-
-    private var addVocabularySheet: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
-            Text(L("添加表达"))
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Theme.Palette.label)
-            VStack(alignment: .leading, spacing: 8) {
-                TextField(L("表达"), text: $newTerm)
-                TextField(L("语境释义"), text: $newMeaning)
-                TextField(L("来源句"), text: $newSourceSentence)
-            }
-            .textFieldStyle(.roundedBorder)
-            HStack {
-                Spacer()
-                Button(L("取消")) {
-                    showAddSheet = false
-                }
-                Button(L("加入词库")) {
-                    if let id = settings.addLearningVocabularyTerm(
-                        term: newTerm,
-                        meaning: newMeaning,
-                        sourceSentence: newSourceSentence
-                    ) {
-                        selectedID = id
-                        newTerm = ""
-                        newMeaning = ""
-                        newSourceSentence = ""
-                        showAddSheet = false
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(expression.term)
+                            .font(Theme.Font.term)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("vocabulary.detail.term")
+                        if let phonetic = expression.phonetic, !phonetic.isEmpty {
+                            Text(phonetic)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    detailSection("释义", meaning, emptyText: "还没有释义，点“编辑”补充。")
+                    if !sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        detailSection("原句", sourceSentence)
+                    }
+                    Divider()
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(L(expression.masteryStage >= 5 ? "已掌握" : "学习中"))
+                                .font(.system(size: 12, weight: .medium))
+                            Text(L("下次复习：%@", item.nextReviewLabel))
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if expression.masteryStage < 5 {
+                            Button(L("标记掌握")) {
+                                settings.markLearningMastered(expression, sceneLabel: item.sceneLabel)
+                            }
+                            .controlSize(.small)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .accessibilityLabel(L("已掌握"))
+                        }
+                    }
+                    if let entry = item.entry {
+                        let dateStyle = Date.FormatStyle(
+                            date: .abbreviated,
+                            time: .omitted,
+                            locale: Locale(identifier: L10n.languageCode())
+                        )
+                        Text(L("添加于 %@", entry.savedAt.formatted(dateStyle)))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                .buttonStyle(PrimaryActionButtonStyle())
-                .disabled(newTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.horizontal, 26)
+                .padding(.top, 20)
+                .padding(.bottom, 26)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                Button(L("移除单词")) { remove(item) }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("vocabulary.remove")
+                Spacer()
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 26)
+            .padding(.vertical, 14)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func detailSection(_ title: String, _ text: String, emptyText: String = "") -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(L(title))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(L(emptyText))
+                    .font(.system(size: 14))
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text(text)
+                    .font(.system(size: 15))
+                    .lineSpacing(5)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(18)
-        .frame(width: 420)
-        .background(Theme.Palette.bgPanel)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func saveIfNeeded(_ item: LearningVocabularyItem) {
-        guard !item.isSaved else { return }
-        settings.markLearningSaved(item.expression, sceneLabel: item.sceneLabel)
+    private func reloadVocabularyItems() {
+        cachedItems = state.learningVocabularyItems.filter(\.isSaved)
+    }
+
+    private func reconcileSelection() {
+        if selectedID == nil || !visibleItems.contains(where: { $0.id == selectedID }) {
+            selectedID = visibleItems.first?.id
+        }
+    }
+
+    private func finishSave(_ id: String) {
+        scope = .all
+        query = ""
+        reloadVocabularyItems()
+        selectedID = id
+        editor = nil
+    }
+
+    private func remove(_ item: LearningVocabularyItem) {
+        guard let entry = item.entry else { return }
+        removedEntries.append(entry)
+        settings.removeLearningVocabularyEntry(item.id)
+        reloadVocabularyItems()
+        reconcileSelection()
+    }
+
+    private func undoRemoval() {
+        guard let entry = removedEntries.popLast() else { return }
+        settings.restoreLearningVocabularyEntry(entry)
+        scope = .all
+        query = ""
+        reloadVocabularyItems()
+        selectedID = entry.id
     }
 }
 
-private struct VocabularyRowData: Equatable, Identifiable {
-    let id: String
-    let term: String
-    let sceneLabel: String
-    let masteryText: String
-    let occurrenceCount: Int
-    let nextReviewLabel: String
-    let isSaved: Bool
-    let isFavorite: Bool
-
-    init(item: LearningVocabularyItem) {
-        id = item.id
-        term = item.expression.term
-        sceneLabel = item.sceneLabel
-        masteryText = item.expression.masteryText
-        occurrenceCount = item.expression.occurrenceCount
-        nextReviewLabel = item.nextReviewLabel
-        isSaved = item.isSaved
-        isFavorite = item.isFavorite
-    }
-}
-
-private struct VocabularyRow: View, Equatable {
-    let data: VocabularyRowData
-    let selected: Bool
+private struct VocabularyRow: View {
+    let item: LearningVocabularyItem
 
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.s8) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(data.term)
-                        .font(Theme.Font.body)
-                        .foregroundStyle(Theme.Palette.label)
-                        .lineLimit(1)
-                    if data.isSaved {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.Palette.success)
-                    }
-                    if data.isFavorite {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.Palette.star)
-                    }
-                }
-                Text("\(data.sceneLabel) · \(data.masteryText)")
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.label3)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Text(item.expression.term)
+                    .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
+                Spacer(minLength: 4)
+                if item.isFavorite {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(L("已收藏"))
+                }
             }
-            Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 5) {
-                FrequencyBadge(count: data.occurrenceCount)
-                Text(data.nextReviewLabel)
-                    .font(Theme.Font.caption)
-                    .foregroundStyle(Theme.Palette.label3)
-            }
+            Text((item.entry?.meaning ?? "").isEmpty ? L("未填写释义") : (item.entry?.meaning ?? ""))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-        .background(selected ? Theme.Palette.bgSelection : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .combine)
     }
 }
 

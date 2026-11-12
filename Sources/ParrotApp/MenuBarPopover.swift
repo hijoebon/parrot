@@ -63,6 +63,7 @@ struct MenuBarPopoverView: View {
                 }
             }
             plainRow("查看全部历史", icon: "clock.arrow.circlepath", action: onHistory)
+            plainRow("单词本", icon: "text.book.closed", action: onVocabulary)
 
             sectionDivider
 
@@ -70,7 +71,6 @@ struct MenuBarPopoverView: View {
                 Menu {
                     Button(L("输入润色"), action: onPolishInput)
                     Button(L("今日复习"), action: onLearningReview)
-                    Button(L("个人词库"), action: onVocabulary)
                     Button(L("规则记忆"), action: onContextMemory)
                 } label: {
                     HStack(spacing: 9) {

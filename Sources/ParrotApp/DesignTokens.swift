@@ -50,11 +50,19 @@ enum Theme {
     }
 
     enum Font {
-        static let result = SwiftUI.Font.system(size: 16, weight: .regular)
-        static let body = SwiftUI.Font.system(size: 13)
+        // Keep editable, selectable and history text on the same reading scale.
+        static let readingSize: CGFloat = 13
+        static let readingLineSpacing: CGFloat = 2
+        static let result = SwiftUI.Font.system(size: readingSize, weight: .regular)
+        static let body = SwiftUI.Font.system(size: readingSize)
+        static let pageTitle = SwiftUI.Font.system(size: 20, weight: .medium)
+        static let sectionTitle = SwiftUI.Font.system(size: 14, weight: .semibold)
+        static let term = SwiftUI.Font.system(size: 18, weight: .semibold)
         static let callout = SwiftUI.Font.system(size: 12)
         static let caption = SwiftUI.Font.system(size: 11)
         static let tag = SwiftUI.Font.system(size: 11, weight: .medium)
+
+        static var readingNSFont: NSFont { .systemFont(ofSize: readingSize) }
     }
 
     /// 8pt spacing grid.
