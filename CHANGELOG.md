@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 — 2026-11-16
+
+- Show how often each Wordbook entry appears in translation history, when it last appeared, how many times it was viewed, and when it was last viewed. Sort entries by any of these statistics, word name, date added, or next review.
+- Stop read-aloud playback from the workspace, history, Wordbook, or app menu.
+- Show the installed voice quality in Speech settings, preview English and Mandarin, and open macOS voice settings to download Ava or Lili.
+- Support a fixed signing identity for local macOS development builds.
+
 ## 0.1.6 — 2026-11-16
 
 - Restore inline definitions when selecting a word in the source or translation on macOS. Save the word, meaning, and context to the Wordbook directly from the definition.
