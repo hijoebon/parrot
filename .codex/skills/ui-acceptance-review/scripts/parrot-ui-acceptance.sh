@@ -403,7 +403,12 @@ if let wordbook = menuItem(named: "Wordbook", in: app) {
           button(named: "Add Word", in: wordbookWindow) != nil else {
         fail("wordbook did not expose its add action")
     }
-    print("INFO: wordbook menu route and add action passed")
+    for identifier in ["vocabulary.sort.field", "vocabulary.sort.direction"] {
+        guard walk(wordbookWindow, visit: {
+            attr($0, kAXIdentifierAttribute) as? String == identifier
+        }) != nil else { fail("wordbook did not expose \(identifier)") }
+    }
+    print("INFO: wordbook menu route, add action, and sorting controls passed")
 }
 
 if let settings = menuItem(named: "Settings...", in: app) {
@@ -414,9 +419,17 @@ if let settings = menuItem(named: "Settings...", in: app) {
           let translationPane = button(named: "Translate", in: settingsWindow) else {
         fail("settings sidebar missing translation pane")
     }
-    guard button(named: "Speech", in: settingsWindow) != nil else {
+    guard let speechPane = button(named: "Speech", in: settingsWindow) else {
         fail("settings sidebar missing Speech")
     }
+    press(speechPane, name: "Speech")
+    guard waitForWindow(named: "Parrot Settings", in: app, ready: { window in
+        ["speech.voice.english", "speech.voice.mandarin", "speech.voice.openSettings", "speech.preview.mandarin"]
+            .allSatisfy { id in
+                walk(window) { attr($0, kAXIdentifierAttribute) as? String == id } != nil
+            }
+    }) != nil else { fail("offline voice setup controls did not appear") }
+    print("INFO: offline voice status, system settings entry, and Mandarin preview passed")
     clickTrailingSpace(of: translationPane, name: "settings sidebar")
     guard let initialCatalog = disclosure(named: "Add Translation Engine", in: settingsWindow) else {
         _ = walk(settingsWindow) { element in
@@ -596,6 +609,16 @@ guard let readSource = enabledReadButton("workspace.readSource", in: routedWorks
     fail("workspace did not expose an enabled Read Source button")
 }
 press(readSource, name: "Read source aloud")
+guard let speakingWorkspace = waitForWindow(named: "Parrot Translation", in: app, ready: {
+    enabledReadButton("speech.stop", in: $0) != nil
+}), let stop = enabledReadButton("speech.stop", in: speakingWorkspace) else {
+    fail("read aloud did not expose an enabled stop action")
+}
+press(stop, name: "Stop Reading Aloud")
+guard waitForWindow(named: "Parrot Translation", in: app, ready: {
+    enabledReadButton("speech.stop", in: $0) == nil
+}) != nil else { fail("stop did not reset the read-aloud controls") }
+print("INFO: read-aloud stop action passed")
 selectText("proprietary", in: routedComposer)
 guard let selectedWorkspace = waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
     let definition = walk(workspace) {

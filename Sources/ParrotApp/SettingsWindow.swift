@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import Combine
 import SwiftUI
 import Carbon.HIToolbox
 import ParrotCore
@@ -306,6 +308,7 @@ struct SettingsView: View {
     @State private var modelListDrafts: [String: [EngineModelConfig]] = [:]
     @State private var endpointDrafts: [String: String] = [:]
     @State private var validateNote: String = ""
+    @State private var speechPreviewError: String?
     @State private var savedNote: String = ""
     @State private var keySearchText = ""
     @State private var keyFilter: KeyFilter = .configured
@@ -1088,7 +1091,9 @@ struct SettingsView: View {
     }
 
     private var ttsPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let isOffline = settings.ttsProviderId == "system"
+        let englishSample = "Could you pick it up on your way home? I should've called you, but I forgot. I asked for a blue one, not a green one."
+        return VStack(alignment: .leading, spacing: 0) {
             sectionTitle("语音合成")
             formGroup {
                 settingRow("默认 TTS 引擎") {
@@ -1098,17 +1103,42 @@ struct SettingsView: View {
                         }
                     }
                     .labelsHidden().frame(width: 200)
-                    .onChange(of: settings.ttsProviderId) { _ in state.applySettings() }
+                    .onChange(of: settings.ttsProviderId) { _ in
+                        speechPreviewError = nil
+                        Speaker.shared.stop()
+                        state.ttsCoordinator.applySettings(settings)
+                    }
                 }
             }
-            callout("默认使用系统离线语音。云端 TTS 需在「密钥」页配置对应 API Key。")
+            if isOffline {
+                OfflineVoiceSetupView()
+                    .padding(.top, Theme.Spacing.s12)
+            } else {
+                callout("云端朗读会将文本发送给所选服务。请在「密钥」页配置对应 API Key。")
+            }
             HStack(spacing: Theme.Spacing.s12) {
-                Button(L("配置当前 TTS 密钥")) { focusCredentialService(settings.ttsProviderId) }
+                if !isOffline {
+                    Button(L("配置当前 TTS 密钥")) {
+                        focusCredentialService(settings.ttsProviderId)
+                    }
                     .controlSize(.small)
-                    .disabled(CredentialCatalog.descriptor(matching: settings.ttsProviderId) == nil)
+                }
+                SpeechPreviewControls(
+                    sample: englishSample,
+                    mandarinSample: isOffline ? L("你好，这是一段普通话试听。清晰的停顿和语调，让朗读听起来更自然。") : nil,
+                    error: $speechPreviewError
+                )
                 Spacer()
             }
             .padding(.top, Theme.Spacing.s12)
+            Text(englishSample)
+                .font(Theme.Font.callout)
+                .foregroundStyle(Theme.Palette.label2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Theme.Spacing.s8)
+            if let speechPreviewError {
+                callout(speechPreviewError)
+            }
         }
     }
 
@@ -2770,5 +2800,150 @@ struct SettingsView: View {
         }
         validateNote = configured ? L("OCR 密钥已配置 ✓") : L("OCR 密钥未配置")
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { validateNote = "" }
+    }
+}
+
+@MainActor
+private struct OfflineVoiceSetupView: View {
+    @State private var english: SystemTTSProvider.VoiceAvailability?
+    @State private var mandarin: SystemTTSProvider.VoiceAvailability?
+    @State private var couldNotOpenSettings = false
+
+    private var hasAllHighQualityVoices: Bool {
+        usesHighQualityVoice(english) && usesHighQualityVoice(mandarin)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+            Text(L("离线音色"))
+                .font(Theme.Font.callout.weight(.semibold))
+            voiceRow("英语（美国）", voice: english, suggested: "Ava（高音质）", id: "speech.voice.english")
+            voiceRow("普通话（中国大陆）", voice: mandarin, suggested: "莉莉（高音质）", id: "speech.voice.mandarin")
+
+            Button(action: openVoiceSettings) {
+                Label(L("打开系统音色设置"), systemImage: "arrow.up.forward.app")
+            }
+            .controlSize(.small)
+            .accessibilityIdentifier("speech.voice.openSettings")
+
+            if !hasAllHighQualityVoices {
+                Text(L("点「系统声音」旁的 ⓘ 下载推荐音色。下载后返回 Parrot，即可自动使用。"))
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if couldNotOpenSettings {
+                Text(L("请在 Mac 的系统设置中搜索「朗读内容」或「阅读与朗读」。"))
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.label2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Palette.bgControl, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+        .onAppear(perform: refreshVoices)
+        .onReceive(voiceStatusChanges) { _ in
+            refreshVoices()
+        }
+    }
+
+    private var voiceStatusChanges: AnyPublisher<Notification, Never> {
+        let center = NotificationCenter.default
+        let appActivation = center.publisher(for: NSApplication.didBecomeActiveNotification)
+        if #available(macOS 14, *) {
+            return appActivation
+                .merge(with: center.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification))
+                .receive(on: RunLoop.main)
+                .eraseToAnyPublisher()
+        }
+        return appActivation.eraseToAnyPublisher()
+    }
+
+    private func voiceRow(
+        _ title: String,
+        voice: SystemTTSProvider.VoiceAvailability?,
+        suggested: String,
+        id: String
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s8) {
+            Text(L(title))
+                .font(Theme.Font.callout)
+            Spacer(minLength: Theme.Spacing.s12)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(status(for: voice))
+                    .font(Theme.Font.callout)
+                    .foregroundStyle(Theme.Palette.label2)
+                if !usesHighQualityVoice(voice) {
+                    Text(L("推荐下载 %@", L(suggested)))
+                        .font(Theme.Font.caption)
+                        .foregroundStyle(Theme.Palette.label2)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(id)
+    }
+
+    private func status(for voice: SystemTTSProvider.VoiceAvailability?) -> String {
+        guard let voice else { return L("使用标准音色") }
+        switch voice.quality {
+        case .premium: return L("%@（高音质）", voice.name)
+        case .enhanced: return L("%@（优化音质）", voice.name)
+        case .standard: return L("使用标准音色")
+        }
+    }
+
+    private func usesHighQualityVoice(_ voice: SystemTTSProvider.VoiceAvailability?) -> Bool {
+        voice?.quality == .premium || voice?.quality == .enhanced
+    }
+
+    private func refreshVoices() {
+        english = SystemTTSProvider.voiceAvailability(for: .en)
+        mandarin = SystemTTSProvider.voiceAvailability(for: .zh)
+    }
+
+    private func openVoiceSettings() {
+        let links = [
+            "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?TextToSpeech",
+            "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent",
+            "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent",
+            "x-apple.systempreferences:com.apple.Accessibility-Settings.extension"
+        ]
+        couldNotOpenSettings = !links.compactMap(URL.init(string:)).contains { NSWorkspace.shared.open($0) }
+    }
+}
+
+@MainActor
+private struct SpeechPreviewControls: View {
+    let sample: String
+    let mandarinSample: String?
+    @Binding var error: String?
+    @ObservedObject private var speaker = Speaker.shared
+
+    init(sample: String, mandarinSample: String?, error: Binding<String?>) {
+        self.sample = sample
+        self.mandarinSample = mandarinSample
+        _error = error
+    }
+
+    var body: some View {
+        previewButton("试听英语", sample: sample, language: .en, id: "speech.preview")
+        if let mandarinSample {
+            previewButton("试听普通话", sample: mandarinSample, language: .zh, id: "speech.preview.mandarin")
+        }
+        StopSpeechButton()
+    }
+
+    private func previewButton(_ title: String, sample: String, language: Language, id: String) -> some View {
+        Button(L(title)) {
+            error = nil
+            speaker.preview(sample, language: language) {
+                error = Speaker.recoveryMessage(for: $0)
+            }
+        }
+        .controlSize(.small)
+        .disabled(speaker.isPreviewing)
+        .accessibilityIdentifier(id)
     }
 }

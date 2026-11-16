@@ -334,6 +334,7 @@ struct ResultView: View {
             }
             Spacer(minLength: 0)
             HStack(spacing: Theme.Spacing.s4) {
+                StopSpeechButton()
                 IconButton("text.book.closed", help: "单词本") { onVocabulary() }
                 IconButton(
                     panelPresentation.isPinned ? "pin.fill" : "pin",

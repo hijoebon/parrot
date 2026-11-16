@@ -90,6 +90,8 @@ bash scripts/build-app.sh   # 产出 build/Parrot.app（菜单栏常驻）
 **macOS**：Swift 6 + SwiftUI + AppKit，macOS 13+。  
 **iOS**：SwiftUI，iOS 17+；`xcodegen generate` 后打开 `Parrot.xcodeproj` 运行 `ParrotiOS`。
 
+本机开发时用 `PARROT_LOCAL_DEV_SIGN=1 bash scripts/build-app.sh` 固定签名，并在同一个位置安装。首次授权后，后续构建可沿用同一签名身份和包名。若钥匙串里有多个开发证书，可用 `PARROT_SIGN_IDENTITY` 指定名称或指纹。
+
 提交前请运行 `swift build`、`swift test` 和 `.codex/skills/ui-acceptance-review/scripts/parrot-ui-acceptance.sh`。
 
 ## 架构

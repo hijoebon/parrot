@@ -1879,4 +1879,11 @@ final class AppState: ObservableObject {
     func speakTranslation(_ text: String) {
         Speaker.shared.speak(text, language: targetLanguage)
     }
+
+    func speakVocabulary(_ text: String, context: String) {
+        let detector = LanguageDetector()
+        let contextLanguage = context.localizedCaseInsensitiveContains(text) ? detector.detect(context) : nil
+        let language = detector.detect(text) ?? contextLanguage ?? .auto
+        Speaker.shared.speak(text, language: language)
+    }
 }

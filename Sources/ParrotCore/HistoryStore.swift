@@ -101,6 +101,7 @@ public actor HistoryStore {
     private let fileURL: URL
     private let maxRecords: Int
     private var hasLoaded = false
+    private var contentObservers: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     public init(fileURL: URL? = nil, maxRecords: Int = 5000) {
         if let fileURL {
@@ -146,6 +147,7 @@ public actor HistoryStore {
         records.insert(record, at: 0)
         trim()
         persist()
+        notifyContentChanged()
         return record
     }
 
@@ -167,6 +169,26 @@ public actor HistoryStore {
     public func all() -> [TranslationRecord] {
         loadIfNeeded()
         return records
+    }
+
+    /// Emits an initial event, then coalesces changes to text or record membership.
+    public func contentUpdates() -> AsyncStream<Void> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        contentObservers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeContentObserver(id) }
+        }
+        continuation.yield(())
+        return stream
+    }
+
+    private func removeContentObserver(_ id: UUID) {
+        contentObservers.removeValue(forKey: id)
+    }
+
+    private func notifyContentChanged() {
+        for observer in contentObservers.values { observer.yield(()) }
     }
 
     public func latest(limit: Int) -> [TranslationRecord] {
@@ -218,6 +240,7 @@ public actor HistoryStore {
         records[index].providerId = providerId
         records[index].outcomes = outcomes
         persist()
+        notifyContentChanged()
         return true
     }
 
@@ -226,6 +249,7 @@ public actor HistoryStore {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         records.remove(at: index)
         persist()
+        notifyContentChanged()
     }
 
     public func clear() {
@@ -233,5 +257,6 @@ public actor HistoryStore {
         guard !records.isEmpty else { return }
         records.removeAll()
         persist()
+        notifyContentChanged()
     }
 }

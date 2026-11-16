@@ -24,16 +24,48 @@ import ParrotCore
 }
 
 @MainActor
+@Test func vocabularyViewsLoadOlderEntriesAndPersistSeparatelyFromEdits() throws {
+    try withVocabularySettings { _, defaults, fileURL in
+        let olderEntries = """
+        [{
+          "id":"latency","term":"latency","meaning":"延迟","sourceSentence":"Network latency increased.",
+          "sceneLabel":"技术文档","occurrenceCount":7,"masteryStage":3,"wrongCount":2,
+          "isFavorite":true,"isManual":true,"savedAt":100,"updatedAt":200,"lastReviewedAt":150
+        }]
+        """
+        defaults.set(Data(olderEntries.utf8), forKey: "learning.vocabulary.entries")
+        let settings = AppSettings(defaults: defaults, terminologyStore: TerminologyStore(fileURL: fileURL))
+        let initial = try #require(settings.learningVocabularyEntry(for: "latency"))
+        #expect(initial.viewCount == 0)
+        #expect(initial.lastViewedAt == nil)
+
+        let latestView = Date(timeIntervalSinceReferenceDate: 400)
+        settings.recordLearningVocabularyView(initial.id, at: latestView)
+        settings.recordLearningVocabularyView(initial.id, at: Date(timeIntervalSinceReferenceDate: 300))
+        settings.recordLearningVocabularyView("unsaved")
+        let reloaded = AppSettings(defaults: defaults, terminologyStore: TerminologyStore(fileURL: fileURL))
+        let viewed = try #require(reloaded.learningVocabularyEntry(for: initial.term))
+        var expected = initial
+        expected.viewCount = 2
+        expected.lastViewedAt = latestView
+        #expect(reloaded.learningVocabularyEntries.count == 1)
+        #expect(viewed == expected)
+    }
+}
+
+@MainActor
 @Test func vocabularyEditingRenamesIdentityAndPersistsLearningHistory() throws {
     try withVocabularySettings { settings, defaults, fileURL in
         let savedAt = Date(timeIntervalSince1970: 100)
         let reviewedAt = Date(timeIntervalSince1970: 200)
         let nextReviewAt = Date(timeIntervalSince1970: 300)
+        let viewedAt = Date(timeIntervalSince1970: 250)
         let original = LearningVocabularyEntry(
             id: "latncy", term: "latncy", meaning: "延迟", sourceSentence: "Network latncy increased.",
             sceneLabel: "技术文档", occurrenceCount: 7, masteryStage: 5, wrongCount: 2,
             isFavorite: true, isManual: true, savedAt: savedAt, updatedAt: savedAt,
-            lastReviewedAt: reviewedAt, nextReviewAt: nextReviewAt
+            lastReviewedAt: reviewedAt, nextReviewAt: nextReviewAt,
+            viewCount: 3, lastViewedAt: viewedAt
         )
         settings.restoreLearningVocabularyEntry(original)
 
@@ -54,6 +86,8 @@ import ParrotCore
         #expect(edited.masteryStage == 5)
         #expect(edited.wrongCount == 2)
         #expect(edited.occurrenceCount == 7)
+        #expect(edited.viewCount == 3)
+        #expect(edited.lastViewedAt == viewedAt)
         #expect(edited.isFavorite)
         #expect(reloaded.learningSavedExpressionIDs == [newID])
         #expect(reloaded.learningMasteredExpressionIDs == [newID])
@@ -65,12 +99,14 @@ import ParrotCore
     try withVocabularySettings { settings, _, _ in
         let original = LearningVocabularyEntry(
             id: "ship", term: "ship", meaning: "发布", masteryStage: 2, wrongCount: 3,
-            isFavorite: true, savedAt: Date(timeIntervalSince1970: 100)
+            isFavorite: true, savedAt: Date(timeIntervalSince1970: 100),
+            viewCount: 3, lastViewedAt: Date(timeIntervalSince1970: 500)
         )
         let existing = LearningVocabularyEntry(
             id: "ship it", term: "ship it", meaning: "发布它", sourceSentence: "We can ship it tomorrow.",
             occurrenceCount: 8, masteryStage: 4,
-            savedAt: Date(timeIntervalSince1970: 200), lastReviewedAt: Date(timeIntervalSince1970: 300)
+            savedAt: Date(timeIntervalSince1970: 200), lastReviewedAt: Date(timeIntervalSince1970: 300),
+            viewCount: 2, lastViewedAt: Date(timeIntervalSince1970: 400)
         )
         settings.restoreLearningVocabularyEntry(original)
         settings.restoreLearningVocabularyEntry(existing)
@@ -90,7 +126,16 @@ import ParrotCore
         #expect(merged.occurrenceCount == 8)
         #expect(merged.savedAt == original.savedAt)
         #expect(merged.lastReviewedAt == existing.lastReviewedAt)
+        #expect(merged.viewCount == 5)
+        #expect(merged.lastViewedAt == original.lastViewedAt)
         #expect(settings.learningSavedExpressionIDs == [existing.id])
+
+        _ = settings.updateLearningVocabularyEntry(
+            merged.id, term: merged.term, meaning: merged.meaning, sourceSentence: merged.sourceSentence
+        )
+        let edited = try #require(settings.learningVocabularyEntry(for: merged.term))
+        #expect(edited.viewCount == merged.viewCount)
+        #expect(edited.lastViewedAt == merged.lastViewedAt)
     }
 }
 
@@ -152,7 +197,8 @@ import ParrotCore
             id: "proposal", term: "proposal", meaning: "提案", sourceSentence: "Review the proposal.",
             sceneLabel: "商务", occurrenceCount: 4, masteryStage: 5, wrongCount: 2,
             isFavorite: true, savedAt: Date(timeIntervalSince1970: 100), updatedAt: Date(timeIntervalSince1970: 200),
-            lastReviewedAt: Date(timeIntervalSince1970: 300), nextReviewAt: Date(timeIntervalSince1970: 400)
+            lastReviewedAt: Date(timeIntervalSince1970: 300), nextReviewAt: Date(timeIntervalSince1970: 400),
+            viewCount: 3, lastViewedAt: Date(timeIntervalSince1970: 350)
         )
         settings.restoreLearningVocabularyEntry(entry)
         settings.removeLearningVocabularyEntry(entry.id)

@@ -164,17 +164,60 @@ public final class VolcengineTTSProvider: TTSProvider, @unchecked Sendable {
     public func stop() async { await AudioPlayer.shared.stop() }
 }
 
-/// Minimal MP3 player for cloud TTS responses.
 @MainActor
-final class AudioPlayer {
+final class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     static let shared = AudioPlayer()
-    private var player: AVAudioPlayer?
+    private var playback: Playback?
 
-    func play(data: Data) throws {
-        player?.stop()
-        player = try AVAudioPlayer(data: data)
-        player?.play()
+    private struct Playback {
+        let player: AVAudioPlayer
+        let continuation: CheckedContinuation<Void, Error>
     }
 
-    func stop() { player?.stop() }
+    func play(data: Data) async throws {
+        try Task.checkCancellation()
+        let player = try AVAudioPlayer(data: data)
+        player.delegate = self
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                stop()
+                playback = Playback(player: player, continuation: continuation)
+                if !player.play() {
+                    finishPlayback(of: player, result: .failure(ProviderError.service("Audio playback did not start")))
+                }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                guard self?.playback?.player === player else { return }
+                self?.stop()
+            }
+        }
+    }
+
+    func stop() {
+        guard let playback else { return }
+        self.playback = nil
+        playback.player.stop()
+        playback.continuation.resume(throwing: CancellationError())
+    }
+
+    private func finishPlayback(of player: AVAudioPlayer, result: Result<Void, Error>) {
+        guard let playback, playback.player === player else { return }
+        self.playback = nil
+        playback.continuation.resume(with: result)
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let result: Result<Void, Error> = flag ? .success(()) : .failure(ProviderError.service("Audio playback failed"))
+        Task { @MainActor [weak self] in self?.finishPlayback(of: player, result: result) }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let failure = error ?? ProviderError.service("Audio playback failed")
+        Task { @MainActor [weak self] in self?.finishPlayback(of: player, result: .failure(failure)) }
+    }
 }

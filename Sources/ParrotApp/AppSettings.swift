@@ -309,6 +309,16 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    func recordLearningVocabularyView(_ id: String, at date: Date = Date()) {
+        guard let index = learningVocabularyEntries.firstIndex(where: { $0.id == id }) else { return }
+        var entries = learningVocabularyEntries
+        if entries[index].viewCount < Int.max {
+            entries[index].viewCount += 1
+        }
+        entries[index].lastViewedAt = max(entries[index].lastViewedAt ?? date, date)
+        learningVocabularyEntries = entries
+    }
+
     /// Editing a term changes its lookup identity while retaining its learning history.
     /// If the new term already exists, the two entries become one saved word.
     @discardableResult
@@ -323,10 +333,11 @@ final class AppSettings: ObservableObject {
               let original = learningVocabularyEntries.first(where: { $0.id == id }) else { return nil }
         let existing = learningVocabularyEntry(for: term)
         let newID = existing?.id ?? LearningRecommendationEngine.key(for: term)
-        let merged = existing.map { Self.mergingVocabularyMetadata(original, with: $0) } ?? original
+        var metadata = original
         var meaning = rawMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
         var sourceSentence = rawSourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
         if let existing, existing.id != original.id {
+            metadata = Self.mergingVocabularyMetadata(original, with: existing)
             meaning = Self.combiningVocabularyNotes(meaning, with: existing.meaning)
             sourceSentence = Self.combiningVocabularyNotes(sourceSentence, with: existing.sourceSentence)
         }
@@ -335,16 +346,18 @@ final class AppSettings: ObservableObject {
             term: term,
             meaning: meaning,
             sourceSentence: sourceSentence,
-            sceneLabel: merged.sceneLabel,
-            occurrenceCount: merged.occurrenceCount,
-            masteryStage: merged.masteryStage,
-            wrongCount: merged.wrongCount,
-            isFavorite: merged.isFavorite,
+            sceneLabel: metadata.sceneLabel,
+            occurrenceCount: metadata.occurrenceCount,
+            masteryStage: metadata.masteryStage,
+            wrongCount: metadata.wrongCount,
+            isFavorite: metadata.isFavorite,
             isManual: true,
-            savedAt: merged.savedAt,
+            savedAt: metadata.savedAt,
             updatedAt: Date(),
-            lastReviewedAt: merged.lastReviewedAt,
-            nextReviewAt: merged.nextReviewAt
+            lastReviewedAt: metadata.lastReviewedAt,
+            nextReviewAt: metadata.nextReviewAt,
+            viewCount: metadata.viewCount,
+            lastViewedAt: metadata.lastViewedAt
         )
         var entries = learningVocabularyEntries.filter { $0.id != id && $0.id != newID }
         entries.append(updated)
@@ -399,6 +412,9 @@ final class AppSettings: ObservableObject {
         merged.updatedAt = max(entry.updatedAt, other.updatedAt)
         merged.lastReviewedAt = [entry.lastReviewedAt, other.lastReviewedAt].compactMap { $0 }.max()
         merged.nextReviewAt = [entry.nextReviewAt, other.nextReviewAt].compactMap { $0 }.min()
+        let combinedViews = entry.viewCount.addingReportingOverflow(other.viewCount)
+        merged.viewCount = combinedViews.overflow ? Int.max : combinedViews.partialValue
+        merged.lastViewedAt = [entry.lastViewedAt, other.lastViewedAt].compactMap { $0 }.max()
         return merged
     }
 

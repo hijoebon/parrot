@@ -44,8 +44,14 @@ final class LearningReviewWindow {
 }
 
 @MainActor
-final class VocabularyWindow {
+private final class VocabularyWindowPresentation: ObservableObject {
+    @Published var isOpen = false
+}
+
+@MainActor
+final class VocabularyWindow: NSObject, NSWindowDelegate {
     private let state: AppState
+    private let presentation = VocabularyWindowPresentation()
     private var window: NSWindow?
 
     init(state: AppState) {
@@ -55,20 +61,26 @@ final class VocabularyWindow {
     func show() {
         state.refreshLearningHistory()
         if window == nil {
-            let hosting = NSHostingController(rootView: VocabularyView(state: state))
+            let hosting = NSHostingController(rootView: VocabularyView(state: state, presentation: presentation))
             let win = NSWindow(contentViewController: hosting)
             configureTitle(for: win)
             win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             win.isReleasedWhenClosed = false
+            win.delegate = self
             win.setContentSize(NSSize(width: 900, height: 540))
             win.contentMinSize = NSSize(width: 700, height: 460)
             window = win
         }
+        presentation.isOpen = true
         NSApp.activate(ignoringOtherApps: true)
         if let window {
             WindowPlacement.center(window)
         }
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        presentation.isOpen = false
     }
 
     func refreshTitle() {
@@ -368,6 +380,7 @@ private struct LearningReviewView: View {
 private struct VocabularyView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: AppSettings
+    @ObservedObject var presentation: VocabularyWindowPresentation
 
     private enum Scope: String, CaseIterable, Identifiable {
         case all, favorites, due
@@ -393,16 +406,44 @@ private struct VocabularyView: View {
         }
     }
 
+    private enum SortField: String, CaseIterable, Identifiable {
+        case added, name, appearances, lastSeen, views, lastViewed, nextReview
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .added: return "添加时间"
+            case .name: return "单词名称"
+            case .appearances: return "出现记录"
+            case .lastSeen: return "最近出现"
+            case .views: return "查看次数"
+            case .lastViewed: return "最近查看"
+            case .nextReview: return "下次复习"
+            }
+        }
+    }
+
+    private struct ExposureRequest: Equatable {
+        let isOpen: Bool
+        let terms: [String]
+    }
+
+    @AppStorage("wordbook.sortField") private var sortField: SortField = .added
+    @AppStorage("wordbook.sortAscending") private var sortAscending = false
     @State private var query = ""
     @State private var scope: Scope = .all
     @State private var selectedID: String?
+    @State private var explicitlyViewedID: String?
     @State private var editor: Editor?
     @State private var cachedItems: [LearningVocabularyItem] = []
     @State private var removedEntries: [LearningVocabularyEntry] = []
+    @State private var exposureStats: [String: LearningVocabularyExposure] = [:]
+    @State private var measuredTerms: Set<String> = []
 
-    init(state: AppState) {
+    init(state: AppState, presentation: VocabularyWindowPresentation) {
         self.state = state
         self.settings = state.settings
+        self.presentation = presentation
     }
 
     private var visibleItems: [LearningVocabularyItem] {
@@ -414,6 +455,7 @@ private struct VocabularyView: View {
             return [item.expression.term, item.entry?.meaning ?? "", item.entry?.sourceSentence ?? ""]
                 .contains { $0.localizedStandardContains(q) }
         }
+        .sorted(by: comesBefore)
     }
 
     private var selectedItem: LearningVocabularyItem? {
@@ -456,6 +498,12 @@ private struct VocabularyView: View {
             reconcileSelection()
         }
         .onChange(of: visibleItems.map(\.id)) { _ in reconcileSelection() }
+        .onChange(of: presentation.isOpen) { isOpen in
+            if !isOpen { explicitlyViewedID = nil }
+        }
+        .task(id: exposureRequest) { [exposureRequest] in
+            await observeHistory(for: exposureRequest)
+        }
         .sheet(item: $editor) { mode in
             switch mode {
             case .add:
@@ -548,12 +596,20 @@ private struct VocabularyView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
 
+            sortControls
+
             if visibleItems.isEmpty {
                 emptyList
             } else {
-                List(selection: $selectedID) {
+                List(selection: userSelection) {
                     ForEach(visibleItems) { item in
-                        VocabularyRow(item: item)
+                        VocabularyRow(
+                            item: item,
+                            exposure: exposure(for: item),
+                            latestDate: sortField == .lastViewed ? item.entry?.lastViewedAt : exposure(for: item)?.lastSeenAt,
+                            latestDateTitle: sortField == .lastViewed ? "最近查看" : "最近出现"
+                        )
+                            .simultaneousGesture(TapGesture().onEnded { selectWord(item.id) })
                             .tag(item.id)
                             .contextMenu {
                                 if let entry = item.entry {
@@ -572,6 +628,36 @@ private struct VocabularyView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var sortControls: some View {
+        HStack(spacing: 8) {
+            Text(L("排序"))
+                .font(Theme.Font.caption)
+                .foregroundStyle(.secondary)
+            Picker(L("排序"), selection: $sortField) {
+                ForEach(SortField.allCases) { field in
+                    Text(L(field.title)).tag(field)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .accessibilityIdentifier("vocabulary.sort.field")
+
+            Button { sortAscending.toggle() } label: {
+                Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
+                    .frame(width: 30, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(L(sortAscending ? "切换为降序" : "切换为升序"))
+            .accessibilityLabel(L("排序方向"))
+            .accessibilityValue(L(sortAscending ? "升序" : "降序"))
+            .accessibilityIdentifier("vocabulary.sort.direction")
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 
     private var emptyList: some View {
@@ -634,6 +720,7 @@ private struct VocabularyView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 16) {
                 Spacer()
+                StopSpeechButton()
                 Button {
                     settings.toggleLearningVocabularyFavorite(item.id)
                 } label: {
@@ -644,7 +731,7 @@ private struct VocabularyView: View {
                 .accessibilityLabel(L(item.isFavorite ? "取消收藏" : "收藏"))
                 .accessibilityIdentifier("vocabulary.favorite")
                 Button {
-                    state.speakTranslation(expression.term)
+                    state.speakVocabulary(expression.term, context: sourceSentence)
                 } label: {
                     Image(systemName: "speaker.wave.2")
                 }
@@ -678,8 +765,11 @@ private struct VocabularyView: View {
                     }
                     detailSection("释义", meaning, emptyText: "还没有释义，点“编辑”补充。")
                     if !sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        detailSection("原句", sourceSentence)
+                        detailSection("原句", sourceSentence, onSpeak: {
+                            Speaker.shared.speak(sourceSentence, language: .auto)
+                        })
                     }
+                    activitySection(item)
                     Divider()
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 5) {
@@ -732,11 +822,64 @@ private struct VocabularyView: View {
         .background(Color(nsColor: .textBackgroundColor))
     }
 
-    private func detailSection(_ title: String, _ text: String, emptyText: String = "") -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(L(title))
-                .font(.system(size: 12, weight: .medium))
+    private func activitySection(_ item: LearningVocabularyItem) -> some View {
+        let stats = exposure(for: item)
+        let dateStyle = Date.FormatStyle(
+            date: .abbreviated, time: .shortened, locale: Locale(identifier: L10n.languageCode())
+        )
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(L("出现与查看"))
+                .font(Theme.Font.callout.weight(.semibold))
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 14) {
+                activityValue("出现记录", stats.map { countText($0.appearanceCount) } ?? L("统计中…"),
+                              identifier: "vocabulary.activity.appearances")
+                activityValue("最近出现", stats?.lastSeenAt?.formatted(dateStyle)
+                    ?? L(stats == nil ? "统计中…" : "无出现记录"),
+                              identifier: "vocabulary.activity.lastSeen")
+                activityValue("查看次数", countText(item.entry?.viewCount ?? 0),
+                              identifier: "vocabulary.activity.views")
+                activityValue("最近查看", item.entry?.lastViewedAt?.formatted(dateStyle) ?? L("从未查看"),
+                              identifier: "vocabulary.activity.lastViewed")
+            }
+            Text(L("在翻译历史的原文或译文中匹配到单词时，每条记录计一次。主动选中词条查看详情时计一次查看。"))
+                .font(Theme.Font.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Palette.bgControl.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func activityValue(_ title: String, _ value: String, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L(title))
+                .font(Theme.Font.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(Theme.Font.callout.weight(.medium).monospacedDigit())
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func countText(_ count: Int) -> String {
+        count.formatted(.number.locale(Locale(identifier: L10n.languageCode())))
+    }
+
+    private func detailSection(_ title: String, _ text: String, emptyText: String = "", onSpeak: (() -> Void)? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(L(title))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if let onSpeak {
+                    IconButton("speaker.wave.2", help: "朗读句子", size: 11, action: onSpeak)
+                }
+            }
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(L(emptyText))
                     .font(.system(size: 14))
@@ -756,9 +899,92 @@ private struct VocabularyView: View {
         cachedItems = state.learningVocabularyItems.filter(\.isSaved)
     }
 
+    private var exposureRequest: ExposureRequest {
+        ExposureRequest(isOpen: presentation.isOpen, terms: settings.learningVocabularyEntries.map(\.term).sorted())
+    }
+
+    private func observeHistory(for request: ExposureRequest) async {
+        guard request.isOpen, !request.terms.isEmpty else {
+            if request.terms.isEmpty {
+                exposureStats = [:]
+                measuredTerms = []
+            }
+            return
+        }
+        let history = state.history
+        let changes = await history.contentUpdates()
+        for await _ in changes {
+            guard !Task.isCancelled else { return }
+            let records = await history.all()
+            let scan = Task.detached(priority: .utility) {
+                LearningRecommendationEngine.vocabularyExposureStats(records: records, terms: request.terms)
+            }
+            let stats = await withTaskCancellationHandler {
+                await scan.value
+            } onCancel: {
+                scan.cancel()
+            }
+            guard !Task.isCancelled, exposureRequest == request else { return }
+            exposureStats = stats
+            measuredTerms = Set(request.terms.map(LearningRecommendationEngine.key(for:)))
+        }
+    }
+
+    private func exposure(for item: LearningVocabularyItem) -> LearningVocabularyExposure? {
+        let key = LearningRecommendationEngine.key(for: item.expression.term)
+        guard measuredTerms.contains(key) else { return nil }
+        return exposureStats[key] ?? .unseen
+    }
+
+    private func comesBefore(_ lhs: LearningVocabularyItem, _ rhs: LearningVocabularyItem) -> Bool {
+        let nameOrder = lhs.expression.term.localizedStandardCompare(rhs.expression.term)
+        let order: ComparisonResult
+        switch sortField {
+        case .name:
+            if nameOrder != .orderedSame { return nameOrder == (sortAscending ? .orderedAscending : .orderedDescending) }
+            order = .orderedSame
+        case .added:
+            order = compare(lhs.entry?.savedAt, rhs.entry?.savedAt)
+        case .appearances:
+            order = compare(exposure(for: lhs)?.appearanceCount, exposure(for: rhs)?.appearanceCount)
+        case .lastSeen:
+            order = compare(exposure(for: lhs)?.lastSeenAt, exposure(for: rhs)?.lastSeenAt)
+        case .views:
+            order = compare(lhs.entry?.viewCount, rhs.entry?.viewCount)
+        case .lastViewed:
+            order = compare(lhs.entry?.lastViewedAt, rhs.entry?.lastViewedAt)
+        case .nextReview:
+            order = compare(lhs.entry?.nextReviewAt, rhs.entry?.nextReviewAt)
+        }
+        if order != .orderedSame { return order == .orderedAscending }
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return lhs.id < rhs.id
+    }
+
+    private func compare<T: Comparable>(_ lhs: T?, _ rhs: T?) -> ComparisonResult {
+        guard let lhs else { return rhs == nil ? .orderedSame : .orderedDescending }
+        guard let rhs else { return .orderedAscending }
+        guard lhs != rhs else { return .orderedSame }
+        return (lhs < rhs) == sortAscending ? .orderedAscending : .orderedDescending
+    }
+
+    private var userSelection: Binding<String?> {
+        Binding(get: { selectedID }, set: { id in
+            if let id { selectWord(id) } else { selectedID = nil }
+        })
+    }
+
+    private func selectWord(_ id: String) {
+        selectedID = id
+        guard presentation.isOpen, explicitlyViewedID != id else { return }
+        explicitlyViewedID = id
+        settings.recordLearningVocabularyView(id)
+    }
+
     private func reconcileSelection() {
         if selectedID == nil || !visibleItems.contains(where: { $0.id == selectedID }) {
             selectedID = visibleItems.first?.id
+            explicitlyViewedID = nil
         }
     }
 
@@ -767,6 +993,7 @@ private struct VocabularyView: View {
         query = ""
         reloadVocabularyItems()
         selectedID = id
+        explicitlyViewedID = nil
         editor = nil
     }
 
@@ -785,11 +1012,15 @@ private struct VocabularyView: View {
         query = ""
         reloadVocabularyItems()
         selectedID = entry.id
+        explicitlyViewedID = nil
     }
 }
 
 private struct VocabularyRow: View {
     let item: LearningVocabularyItem
+    let exposure: LearningVocabularyExposure?
+    let latestDate: Date?
+    let latestDateTitle: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -809,9 +1040,34 @@ private struct VocabularyRow: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+
+            HStack(spacing: 9) {
+                let count = exposure.map { String($0.appearanceCount) } ?? "…"
+                Label(count, systemImage: "doc.text")
+                    .help(L("出现记录"))
+                    .accessibilityLabel(L("出现记录：%@", count))
+                let views = String(item.entry?.viewCount ?? 0)
+                Label(views, systemImage: "eye")
+                    .help(L("查看次数"))
+                    .accessibilityLabel(L("查看次数：%@", views))
+                Spacer(minLength: 0)
+                if let latestDate {
+                    let date = latestDate.formatted(Date.FormatStyle(
+                        date: .numeric, time: .omitted, locale: Locale(identifier: L10n.languageCode())
+                    ))
+                    Text(date)
+                        .lineLimit(1)
+                        .help(L(latestDateTitle))
+                        .accessibilityLabel("\(L(latestDateTitle)) \(date)")
+                }
+            }
+            .font(Theme.Font.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 7)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("vocabulary.row.\(item.id)")
     }
 }
 

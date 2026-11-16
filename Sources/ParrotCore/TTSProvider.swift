@@ -1,5 +1,4 @@
 import Foundation
-import ParrotCore
 
 public protocol TTSProvider: Sendable {
     var id: String { get }
@@ -12,7 +11,12 @@ public protocol TTSProvider: Sendable {
 @MainActor
 public final class TTSCoordinator {
     private var providers: [String: TTSProvider] = [:]
-    public var defaultProviderId: String = "system"
+    private var playbackProvider: TTSProvider?
+    private var playbackTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
+    public var defaultProviderId: String = "system" {
+        didSet { if oldValue != defaultProviderId { stopPlayback() } }
+    }
 
     public init() {}
 
@@ -28,12 +32,48 @@ public final class TTSCoordinator {
     }
 
     public func speak(_ text: String, language: Language) async {
-        guard !text.isEmpty else { return }
-        await activeProvider()?.stop()
-        try? await activeProvider()?.speak(text, language: language)
+        guard !Task.isCancelled, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        play(text, language: language)
+        await playbackTask?.value
+    }
+
+    public func play(_ text: String, language: Language, onCompletion: ((Result<Void, Error>) -> Void)? = nil) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        stopPlayback()
+        guard let provider = activeProvider() else {
+            onCompletion?(.failure(ProviderError.notConfigured))
+            return
+        }
+
+        playbackProvider = provider
+        let pendingStop = stopTask
+        playbackTask = Task {
+            await pendingStop?.value
+            do {
+                try Task.checkCancellation()
+                try await provider.speak(text, language: language)
+                try Task.checkCancellation()
+                onCompletion?(.success(()))
+            } catch {
+                onCompletion?(.failure(Task.isCancelled ? CancellationError() : error))
+            }
+        }
     }
 
     public func stop() async {
-        await activeProvider()?.stop()
+        stopPlayback()
+        await stopTask?.value
+    }
+
+    public func stopPlayback() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        guard let provider = playbackProvider else { return }
+        playbackProvider = nil
+        let pendingStop = stopTask
+        stopTask = Task {
+            await pendingStop?.value
+            await provider.stop()
+        }
     }
 }

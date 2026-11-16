@@ -19,7 +19,7 @@ struct AppURLRouteOptions: Equatable {
 /// Menu-bar agent: owns the status item, registers global hotkeys, and routes
 /// 划词(⌥D) / 截图OCR(⌥S) / 输入(⌥A) actions into the translation pipeline.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let state = AppState()
     private var statusItem: NSStatusItem?
     private lazy var floating = FloatingPanel(
@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         setupStatusItem()
         registerHotKeys()
+        Speaker.shared.onFailure = { [weak self] error in self?.showSpeechError(error) }
         shortcutObserver = NotificationCenter.default.addObserver(
             forName: .parrotShortcutsDidChange,
             object: nil,
@@ -152,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(appCommand("聚焦源文", action: #selector(focusSourceComposer), key: "l"))
         appMenu.addItem(appCommand("查看历史", action: #selector(showHistory), key: ""))
         appMenu.addItem(appCommand("单词本", action: #selector(showVocabulary), key: ""))
+        appMenu.addItem(appCommand("停止朗读", action: #selector(stopSpeech), key: ""))
         if state.settings.advancedFeaturesEnabled {
             let toolsItem = NSMenuItem(title: L("更多工具"), action: nil, keyEquivalent: "")
             let toolsMenu = NSMenu(title: L("更多工具"))
@@ -182,6 +184,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(stopSpeech) { return Speaker.shared.isPlaying }
+        return true
+    }
+
+    @objc private func stopSpeech() {
+        Speaker.shared.stop()
     }
 
     private func appCommand(_ title: String, action: Selector, key: String) -> NSMenuItem {
@@ -496,6 +507,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showSettings() {
         settingsWindow.show()
+    }
+
+    private func showSpeechError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = L("朗读失败")
+        alert.informativeText = Speaker.recoveryMessage(for: error)
+        alert.addButton(withTitle: L("打开设置"))
+        alert.addButton(withTitle: L("取消"))
+        if alert.runModal() == .alertFirstButtonReturn {
+            settingsWindow.show(pane: .tts)
+        }
     }
 
     private func showSettingsForProvider(_ providerID: String?) {

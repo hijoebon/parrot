@@ -246,7 +246,7 @@ private struct HistoryView: View {
                           providerDisplayOrder: state.providerDisplayOrder,
                           onRetranslate: { onRetranslate(rec) },
                           onCopy: { copy($0) },
-                          onSpeak: { state.speakTranslation($0) },
+                          onSpeak: { Speaker.shared.speak($0, language: rec.targetLang == "auto" ? .auto : Language(code: rec.targetLang)) },
                           onFavorite: { model.toggleFavorite(rec) },
                           onDelete: { confirmDelete(rec) })
             .id(rec.id)
@@ -327,14 +327,18 @@ private struct HistoryDetail: View {
     let onDelete: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Spacing.s20) {
-                header
-                sourceBlock
-                translationCard
+        VStack(spacing: Theme.Spacing.s20) {
+            header
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s20) {
+                    sourceBlock
+                    translationCard
+                }
+                .padding([.horizontal, .bottom], 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Theme.Palette.bgPanel)
     }
@@ -350,6 +354,7 @@ private struct HistoryDetail: View {
             ) { onFavorite() }
             IconButton("doc.on.doc", help: "复制译文") { onCopy(record.translated) }
             IconButton("speaker.wave.2", help: "朗读译文") { onSpeak(record.translated) }
+            StopSpeechButton()
             IconButton("trash", help: "删除") { onDelete() }
         }
     }

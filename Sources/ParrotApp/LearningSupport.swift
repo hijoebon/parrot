@@ -42,6 +42,13 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
     var updatedAt: Date
     var lastReviewedAt: Date?
     var nextReviewAt: Date?
+    private var recordedViewCount: Int?
+    var lastViewedAt: Date?
+
+    var viewCount: Int {
+        get { max(0, recordedViewCount ?? 0) }
+        set { recordedViewCount = newValue > 0 ? newValue : nil }
+    }
 
     init(
         id: String,
@@ -57,7 +64,9 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
         savedAt: Date = Date(),
         updatedAt: Date = Date(),
         lastReviewedAt: Date? = nil,
-        nextReviewAt: Date? = nil
+        nextReviewAt: Date? = nil,
+        viewCount: Int = 0,
+        lastViewedAt: Date? = nil
     ) {
         self.id = id
         self.term = term
@@ -73,6 +82,8 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
         self.updatedAt = updatedAt
         self.lastReviewedAt = lastReviewedAt
         self.nextReviewAt = nextReviewAt
+        self.recordedViewCount = viewCount > 0 ? viewCount : nil
+        self.lastViewedAt = lastViewedAt
     }
 
     init(expression: LearningExpression, sceneLabel: String, date: Date = Date()) {
@@ -93,6 +104,13 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
     static func clampedStage(_ value: Int) -> Int {
         min(5, max(1, value))
     }
+}
+
+struct LearningVocabularyExposure: Equatable, Sendable {
+    let appearanceCount: Int
+    let lastSeenAt: Date?
+
+    static let unseen = Self(appearanceCount: 0, lastSeenAt: nil)
 }
 
 struct LearningVocabularyItem: Identifiable {
@@ -389,6 +407,83 @@ enum LearningRecommendationEngine {
             }
         }
         return counts
+    }
+
+    /// A term appears at most once per saved translation, regardless of how many
+    /// times it occurs in the source or across provider results.
+    static func vocabularyExposureStats(
+        records: [TranslationRecord],
+        terms: [String]
+    ) -> [String: LearningVocabularyExposure] {
+        let termKeys = Set(terms.map { key(for: $0) }.filter { !$0.isEmpty })
+        let candidates = Dictionary(grouping: termKeys.map(ExposureTerm.init)) { $0.scalars[0] }
+        guard !candidates.isEmpty else { return [:] }
+
+        var exposures: [String: LearningVocabularyExposure] = [:]
+        var seenRecordIDs: Set<UUID> = []
+        for record in records where seenRecordIDs.insert(record.id).inserted {
+            guard !Task.isCancelled else { return [:] }
+            var matches: Set<String> = []
+            var seenTexts: Set<String> = []
+            let texts = [record.sourceText, record.translated] + record.displayOutcomes.map(\.translated)
+            for text in texts {
+                let normalized = key(for: text).precomposedStringWithCanonicalMapping
+                guard !normalized.isEmpty, seenTexts.insert(normalized).inserted else { continue }
+                let scalars = Array(normalized.unicodeScalars)
+                for start in scalars.indices {
+                    guard let bucket = candidates[scalars[start]] else { continue }
+                    let afterWord = start > 0 && needsExposureWordBoundary(scalars[start - 1])
+                    for term in bucket where !matches.contains(term.key) {
+                        let end = start + term.scalars.count
+                        guard end <= scalars.count,
+                              !term.requiresLeadingBoundary || !afterWord,
+                              !term.requiresTrailingBoundary || end == scalars.count
+                                  || !needsExposureWordBoundary(scalars[end]),
+                              scalars[start..<end].elementsEqual(term.scalars) else { continue }
+                        matches.insert(term.key)
+                    }
+                }
+                if matches.count == termKeys.count { break }
+            }
+
+            for term in matches {
+                let previous = exposures[term] ?? .unseen
+                let lastSeen = previous.lastSeenAt.map { max($0, record.createdAt) } ?? record.createdAt
+                exposures[term] = LearningVocabularyExposure(
+                    appearanceCount: previous.appearanceCount + 1,
+                    lastSeenAt: lastSeen
+                )
+            }
+        }
+        return exposures
+    }
+
+    private struct ExposureTerm {
+        let key: String
+        let scalars: [Unicode.Scalar]
+        let requiresLeadingBoundary: Bool
+        let requiresTrailingBoundary: Bool
+
+        init(_ key: String) {
+            self.key = key
+            scalars = Array(key.precomposedStringWithCanonicalMapping.unicodeScalars)
+            requiresLeadingBoundary = scalars.first.map(LearningRecommendationEngine.needsExposureWordBoundary) ?? false
+            requiresTrailingBoundary = scalars.last.map(LearningRecommendationEngine.needsExposureWordBoundary) ?? false
+        }
+    }
+
+    private static func needsExposureWordBoundary(_ scalar: Unicode.Scalar) -> Bool {
+        // Han, kana, and Hangul expressions can occur inside text without spaces.
+        switch scalar.value {
+        case 0x1100...0x11FF, 0x3040...0x30FF, 0x3100...0x318F, 0x31A0...0x31FF,
+             0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA960...0xA97F, 0xAC00...0xD7FF,
+             0xF900...0xFAFF, 0xFF66...0xFFDC, 0x1AFF0...0x1B16F,
+             0x20000...0x323AF:
+            return false
+        default:
+            return CharacterSet.alphanumerics.contains(scalar) || CharacterSet.nonBaseCharacters.contains(scalar)
+                || scalar.properties.generalCategory == .connectorPunctuation
+        }
     }
 
     static func vocabularyItems(

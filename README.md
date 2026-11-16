@@ -67,6 +67,8 @@ open Parrot.xcodeproj
 
 The build script produces `build/Parrot.app`. Run `swift build` and `swift test` before submitting changes.
 
+For local development, use `PARROT_LOCAL_DEV_SIGN=1 bash scripts/build-app.sh` and install subsequent builds at the same location. This keeps the signing identity and bundle ID stable after your initial macOS privacy grant. If your keychain has multiple signing identities, select one with `PARROT_SIGN_IDENTITY` using its name or fingerprint.
+
 ## Architecture
 
 Interaction (shortcuts, menus, PopClip, URLs) → application orchestration (`AppState`, `TranslationCoordinator`) → provider abstraction (`TranslationProvider`, registry) → platform services (Vision OCR, accessibility, credentials, speech).
