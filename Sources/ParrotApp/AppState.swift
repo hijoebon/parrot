@@ -1865,7 +1865,15 @@ final class AppState: ObservableObject {
     }
 
     func speakSource(_ text: String) {
-        Speaker.shared.speak(text, language: sourceLanguage == .auto ? detectedSource : sourceLanguage)
+        let language: Language
+        if sourceLanguage != .auto {
+            language = sourceLanguage
+        } else if !isSourceDirty, detectedSource != .auto {
+            language = detectedSource
+        } else {
+            language = LanguageDetector().detect(actionSourceText) ?? .auto
+        }
+        Speaker.shared.speak(text, language: language)
     }
 
     func speakTranslation(_ text: String) {

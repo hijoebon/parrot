@@ -419,6 +419,10 @@ struct ResultView: View {
                 Text(L("原文"))
                     .font(Theme.Font.callout.weight(.medium))
                     .foregroundStyle(Theme.Palette.label2)
+                IconButton("speaker.wave.2", help: "朗读原文", isEnabled: state.canTranslateDraft) {
+                    state.speakSource()
+                }
+                .accessibilityIdentifier("workspace.readSource")
                 Spacer(minLength: 0)
                 if previewSelection == nil {
                     Button { presentVocabularyEditor(selection: vocabularySelection) } label: {
@@ -618,6 +622,14 @@ struct ResultView: View {
                 Text(selection.term)
                     .font(Theme.Font.callout.weight(.semibold))
                     .lineLimit(1)
+                IconButton("speaker.wave.2", help: "朗读选词") {
+                    if selection.usesTranslation {
+                        state.speakTranslation(selection.term)
+                    } else {
+                        state.speakSource(selection.term)
+                    }
+                }
+                .accessibilityIdentifier("workspace.readSelection")
                 Spacer(minLength: 0)
                 if lookup != nil, meaning == nil {
                     Button(L("重试")) { selectionLookupRetry += 1 }
@@ -1315,10 +1327,16 @@ private struct TranslationOutcomeCard<SelectionPreview: View>: View {
                         .foregroundStyle(Theme.Palette.danger)
                 }
                 if let result = outcome.result {
+                    let canReadTranslation = !result.translated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    IconButton("speaker.wave.2", help: "朗读译文", isEnabled: canReadTranslation) {
+                        onSpeak(result.translated)
+                    }
+                    .accessibilityIdentifier("workspace.readTranslation")
                     Menu {
                         Button { onSpeak(result.translated) } label: {
                             Label(L("朗读译文"), systemImage: "speaker.wave.2")
                         }
+                        .disabled(!canReadTranslation)
                         Button { onRetry() } label: {
                             Label(L("重试此引擎"), systemImage: "arrow.clockwise")
                         }

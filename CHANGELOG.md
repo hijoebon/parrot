@@ -3,6 +3,7 @@
 ## 0.1.6 — 2026-11-16
 
 - Restore inline definitions when selecting a word in the source or translation on macOS. Save the word, meaning, and context to the Wordbook directly from the definition.
+- Restore visible read-aloud controls for source text, translations, and selected words. Show Speech in basic settings.
 
 ## 0.1.5 — 2026-11-12
 

@@ -501,7 +501,7 @@ struct SettingsView: View {
         .background(MacMaterialBackground(material: .sidebar))
     }
 
-    private var basicPanes: [Pane] { [.general, .engines, .keys, .shortcuts, .about] }
+    private var basicPanes: [Pane] { [.general, .engines, .tts, .keys, .shortcuts, .about] }
 
     private var visiblePanes: [Pane] {
         // Keep the unfinished plugin interface hidden in advanced settings too.

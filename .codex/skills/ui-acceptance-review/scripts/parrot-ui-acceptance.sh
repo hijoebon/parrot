@@ -414,6 +414,9 @@ if let settings = menuItem(named: "Settings...", in: app) {
           let translationPane = button(named: "Translate", in: settingsWindow) else {
         fail("settings sidebar missing translation pane")
     }
+    guard button(named: "Speech", in: settingsWindow) != nil else {
+        fail("settings sidebar missing Speech")
+    }
     clickTrailingSpace(of: translationPane, name: "settings sidebar")
     guard let initialCatalog = disclosure(named: "Add Translation Engine", in: settingsWindow) else {
         _ = walk(settingsWindow) { element in
@@ -583,8 +586,18 @@ guard let routedComposer = editableComposer(in: routedWorkspace),
       value(routedComposer) == routedText else {
     fail("URL translation workspace did not expose the source editor")
 }
+func enabledReadButton(_ identifier: String, in workspace: AXUIElement) -> AXUIElement? {
+    walk(workspace) {
+        attr($0, kAXIdentifierAttribute) as? String == identifier
+            && attr($0, kAXEnabledAttribute) as? Bool == true
+    }
+}
+guard let readSource = enabledReadButton("workspace.readSource", in: routedWorkspace) else {
+    fail("workspace did not expose an enabled Read Source button")
+}
+press(readSource, name: "Read source aloud")
 selectText("proprietary", in: routedComposer)
-guard waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
+guard let selectedWorkspace = waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
     let definition = walk(workspace) {
         (attr($0, kAXIdentifierAttribute) as? String) == "workspace.selectionDefinition"
     }
@@ -595,10 +608,15 @@ guard waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
         (attr($0, kAXIdentifierAttribute) as? String) == "workspace.addSelectedWord"
             && (attr($0, kAXEnabledAttribute) as? Bool) == true
     } != nil
-}) != nil else {
+}) else {
     fail("selecting 'proprietary' did not show its definition with an enabled Wordbook action")
 }
+guard let readSelection = enabledReadButton("workspace.readSelection", in: selectedWorkspace) else {
+    fail("selected word did not expose an enabled Read Selection button")
+}
+press(readSelection, name: "Read selection aloud")
 print("INFO: source selection definition and Wordbook action passed")
+print("INFO: source and selection read-aloud controls accepted clicks")
 
 print("INFO: UI acceptance smoke checks passed")
 SWIFT
