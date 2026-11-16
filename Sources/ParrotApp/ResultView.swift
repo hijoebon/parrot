@@ -179,6 +179,7 @@ struct ResultView: View {
             minHeight: Layout.minHeight,
             maxHeight: .infinity
         )
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     private var sizingSessionID: String {

@@ -477,6 +477,14 @@ if let input = menuItem(named: "Input Translation", in: app) {
     guard let settingsButton = button(named: "Open Settings", in: workspace) else {
         fail("translation workspace missing settings button in window controls")
     }
+    let topContent = walk(workspace) {
+        accessibleNames($0).contains("No network connection. Translation may fail.")
+    } ?? settingsButton
+    guard let windowTop = pointValue(workspace, kAXPositionAttribute as String)?.y,
+          let contentTop = pointValue(topContent, kAXPositionAttribute as String)?.y,
+          (0...16).contains(contentTop - windowTop) else {
+        fail("translation workspace reserved extra space above its toolbar")
+    }
     press(settingsButton, name: "Open Settings")
     assertWindowTitle("Parrot Settings", in: app)
 }
@@ -500,7 +508,7 @@ if let workspace = waitForWindow(named: "Parrot Translation", in: app, ready: { 
     }
     let targetSize = CGSize(
         width: sizeBeforeResize.width + 80,
-        height: max(sizeBeforeResize.height - 72, 360)
+        height: sizeBeforeResize.height + 48
     )
     guard let primaryScreen = NSScreen.screens.first else {
         fail("could not read screen geometry for manual resize")

@@ -262,13 +262,10 @@ final class FloatingPanel {
         let viewSize = hostingView?.bounds.size
             ?? panel.contentRect(forFrameRect: currentFrame).size
         let safeArea = hostingView?.safeAreaInsets ?? NSEdgeInsets()
-        // A full-size content view includes the transparent title bar, while
-        // SwiftUI lays out this document inside the hosting view's safe area.
-        // Compare measured content with that usable area, reserving each inset
-        // once instead of assuming the full NSView height can display results.
+        // The workspace toolbar occupies the transparent title bar's top inset.
         let currentContentSize = CGSize(
             width: max(0, viewSize.width - safeArea.left - safeArea.right),
-            height: max(0, viewSize.height - safeArea.top - safeArea.bottom)
+            height: max(0, viewSize.height - safeArea.bottom)
         )
         let frameChrome = CGSize(
             width: max(0, currentFrame.width - currentContentSize.width),
