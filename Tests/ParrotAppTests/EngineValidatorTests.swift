@@ -378,6 +378,25 @@ private struct EngineValidationFixtureError: LocalizedError {
     #expect(!expression.meaning.contains("当前译文中的英文表达"))
 }
 
+@Test func learningLookupMeaningPrefersDefinitionsAndDiscardsEchoedHeadwords() {
+    let dictionary = TranslateResult(
+        providerId: "dictionary",
+        translated: "latency",
+        definitions: [Definition(partOfSpeech: " n. ", meanings: [" ", "latency", " 延迟 ", "潜伏期"])]
+    )
+    #expect(LearningRecommendationEngine.meaningForLookupResult(dictionary, term: "Latency") == "n. 延迟；潜伏期")
+
+    let translator = TranslateResult(providerId: "translator", translated: "**Latency:**\n  延迟  ")
+    #expect(LearningRecommendationEngine.meaningForLookupResult(translator, term: "latency") == "延迟")
+
+    let echoed = TranslateResult(
+        providerId: "dictionary",
+        translated: "“latency.”",
+        definitions: [Definition(partOfSpeech: "n.", meanings: ["latency", " "])]
+    )
+    #expect(LearningRecommendationEngine.meaningForLookupResult(echoed, term: "Latency") == nil)
+}
+
 @Test func manualLearningSelectionCanWaitForLookupBeforeGenericFallback() throws {
     let source = "Network latency increased after the release."
     let expression = LearningRecommendationEngine.expressionForManualSelection(

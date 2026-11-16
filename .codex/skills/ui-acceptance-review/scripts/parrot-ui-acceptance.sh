@@ -13,14 +13,27 @@ info() {
   echo "INFO: $*"
 }
 
-cleanup() {
-  pkill -x Parrot >/dev/null 2>&1 || true
-}
-
 APP="$ROOT/build/Parrot.app"
 DEBUG_LOG="/tmp/parrot-debug.log"
 BUNDLE_ID="${PARROT_BUNDLE_ID:-com.parrot.app}"
 ORIGINAL_LANGUAGE="$(defaults read "$BUNDLE_ID" app.languageCode 2>/dev/null || true)"
+
+built_app_pids() {
+  local pid command
+  while read -r pid; do
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$command" in
+      "$APP"/Contents/MacOS/Parrot|"$APP"/Contents/MacOS/Parrot\ *) printf '%s\n' "$pid" ;;
+    esac
+  done < <(pgrep -x Parrot 2>/dev/null || true)
+}
+
+cleanup() {
+  local pid
+  while read -r pid; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done < <(built_app_pids)
+}
 
 finish() {
   cleanup
@@ -51,7 +64,7 @@ sleep 0.5
 open -na "$APP"
 sleep 1.5
 
-PID="$(pgrep -x Parrot | head -1 || true)"
+PID="$(built_app_pids | head -1 || true)"
 test -n "$PID" || fail "Parrot process did not start"
 
 COMMAND="$(ps -p "$PID" -o command= || true)"
@@ -280,6 +293,21 @@ func assertEditableComposer(in workspace: AXUIElement) {
     let editable = editableComposer(in: workspace)
     guard editable != nil else {
         fail("workspace opened without an editable source composer")
+    }
+}
+
+func selectText(_ word: String, in composer: AXUIElement) {
+    let range = (value(composer) as NSString).range(of: word)
+    guard range.location != NSNotFound else {
+        fail("source editor did not contain '\(word)'")
+    }
+    var selectedRange = CFRange(location: range.location, length: range.length)
+    guard let axRange = AXValueCreate(.cfRange, &selectedRange) else {
+        fail("could not create AX text selection")
+    }
+    let error = AXUIElementSetAttributeValue(composer, kAXSelectedTextRangeAttribute as CFString, axRange)
+    guard error == .success else {
+        fail("could not select '\(word)' in the source editor: \(error.rawValue)")
     }
 }
 
@@ -524,8 +552,9 @@ if let workspace = waitForWindow(named: "Parrot Translation", in: app, ready: { 
     fail("OCR fixture did not open editable translation workspace; windows=\(windowTitles(in: app))")
 }
 
-openURL("parrot://translate?text=UI%20acceptance%20smoke%20test", appURL: appURL)
-let routedText = "UI acceptance smoke test"
+let routedText = "UI acceptance smoke test for proprietary software"
+let encodedRoutedText = routedText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+openURL("parrot://translate?text=\(encodedRoutedText)", appURL: appURL)
 guard let routedWorkspace = waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
     walk(workspace) { element in
         accessibleNames(element).contains { $0.contains(routedText) }
@@ -549,6 +578,27 @@ let hasResultPanel = appWindows().contains { window in
 guard hasResultPanel else {
     fail("result panel window did not appear; app windows=\(appWindows())")
 }
+
+guard let routedComposer = editableComposer(in: routedWorkspace),
+      value(routedComposer) == routedText else {
+    fail("URL translation workspace did not expose the source editor")
+}
+selectText("proprietary", in: routedComposer)
+guard waitForWindow(named: "Parrot Translation", in: app, ready: { workspace in
+    let definition = walk(workspace) {
+        (attr($0, kAXIdentifierAttribute) as? String) == "workspace.selectionDefinition"
+    }
+    guard let definition, walk(definition, visit: {
+        accessibleNames($0).contains { $0.contains("专有的") }
+    }) != nil else { return false }
+    return walk(workspace) {
+        (attr($0, kAXIdentifierAttribute) as? String) == "workspace.addSelectedWord"
+            && (attr($0, kAXEnabledAttribute) as? Bool) == true
+    } != nil
+}) != nil else {
+    fail("selecting 'proprietary' did not show its definition with an enabled Wordbook action")
+}
+print("INFO: source selection definition and Wordbook action passed")
 
 print("INFO: UI acceptance smoke checks passed")
 SWIFT

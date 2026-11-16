@@ -364,6 +364,11 @@ enum LearningRecommendationEngine {
         )
     }
 
+    static func meaningForLookupResult(_ result: TranslateResult, term: String) -> String? {
+        lookupMeaning(from: result.definitions, term: term)
+            ?? cleanedLookupText(result.translated, term: term)
+    }
+
     static func occurrenceCounts(records: [TranslationRecord]) -> [String: Int] {
         var counts: [String: Int] = [:]
         let texts = records.map { record in
@@ -592,7 +597,7 @@ enum LearningRecommendationEngine {
         definitions: [Definition]?,
         phonetics: [Phonetic]?
     ) -> LearningExpression? {
-        guard let meaning = lookupMeaning(from: definitions) else { return nil }
+        guard let meaning = lookupMeaning(from: definitions, term: term) else { return nil }
         let count = max(1, occurrenceCounts[key(for: term)] ?? countOccurrences(of: term, in: text))
         return LearningExpression(
             id: key(for: term),
@@ -633,21 +638,29 @@ enum LearningRecommendationEngine {
     }
 
     private static func cleanedLookupText(_ lookupText: String?, term: String) -> String? {
+        let termKey = lookupComparisonKey(term)
         let lines = lookupText?
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty } ?? []
+            .filter { line in
+                let key = lookupComparisonKey(line)
+                return !key.isEmpty && key != termKey
+            } ?? []
         let text = lines.joined(separator: "\n")
             .trimmingCharacters(in: CharacterSet(charactersIn: "` \n\t"))
-        guard !text.isEmpty else { return nil }
-        return key(for: text) == key(for: term) ? nil : text
+        return text.isEmpty ? nil : text
     }
 
-    private static func lookupMeaning(from definitions: [Definition]?) -> String? {
+    private static func lookupComparisonKey(_ text: String) -> String {
+        let wrappers = CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines)
+            .union(CharacterSet(charactersIn: "`"))
+        return key(for: text.trimmingCharacters(in: wrappers))
+    }
+
+    private static func lookupMeaning(from definitions: [Definition]?, term: String) -> String? {
         let rows = definitions?.compactMap { definition -> String? in
             let meanings = definition.meanings
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+                .compactMap { cleanedLookupText($0, term: term) }
                 .joined(separator: "；")
             guard !meanings.isEmpty else { return nil }
             let partOfSpeech = definition.partOfSpeech.trimmingCharacters(in: .whitespacesAndNewlines)

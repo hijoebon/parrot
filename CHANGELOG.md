@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restore inline definitions when selecting a word in the source or translation on macOS. Save the word, meaning, and context to the Wordbook directly from the definition.
+
 ## 0.1.5 — 2026-11-12
 
 - Open the Wordbook from the translation workspace, the menu bar, or the app menu. Save a word or expression with its translation and original sentence.

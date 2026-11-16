@@ -708,6 +708,89 @@ private func makeContextTestState() -> AppState {
 }
 
 @MainActor
+@Test func learningLookupFallsBackAfterAnEchoOrProviderFailure() async throws {
+    let state = makeContextTestState()
+    let requests = AppWordLookupRequests()
+    let sentence = "Network latency increased. Contact person@example.com for details."
+    state.openWorkspace(text: sentence, autoRun: false, focusComposer: false, profile: .github)
+    state.registry.removeAll()
+    state.registry.register(AppWordLookupEngine(id: "translator", requests: requests,
+                                                translated: "延迟", supportsLookup: false))
+    state.registry.register(AppWordLookupEngine(id: "unavailable", requests: requests, failure: .network))
+    state.registry.register(AppWordLookupEngine(id: "disabled", requests: requests,
+                                                translated: "响应时间"), enabled: false)
+    state.registry.register(AppWordLookupEngine(id: "dictionary", requests: requests,
+                                                definitions: [Definition(partOfSpeech: "n.", meanings: ["延迟"])]))
+    state.registry.register(AppWordLookupEngine(id: "openai", requests: requests, translated: "**LATENCY:**"))
+
+    let result = try #require(await state.lookupLearningSelection(
+        "latency", contextText: sentence, providerID: "openai", usesTranslation: false
+    ))
+    let calls = await requests.calls
+
+    #expect(result.providerId == "dictionary")
+    #expect(LearningRecommendationEngine.meaningForLookupResult(result, term: "latency") == "n. 延迟")
+    #expect(calls.map(\.providerID) == ["openai", "unavailable", "dictionary"])
+    #expect(calls.allSatisfy { $0.request.mode == .lookup && $0.request.from == .en && $0.request.to == .zh })
+    #expect(Set(calls.map { $0.request.sessionID }).count == 1)
+    let contextual = try #require(calls.first?.request)
+    #expect(contextual.text.contains("Selected expression: latency"))
+    #expect(contextual.text.contains("Context sentence: Network latency"))
+    #expect(!contextual.text.contains("person@example.com"))
+    #expect(contextual.context?.privacyPolicy == .maskSensitive)
+    #expect(state.sourceDraft == sentence)
+    #expect(state.outcomes.isEmpty)
+}
+
+@MainActor
+@Test func learningLookupCanTranslateJustTheTermWhenDictionariesFail() async throws {
+    let state = makeContextTestState()
+    let requests = AppWordLookupRequests()
+    let sentence = "网络延迟增加了，请检查应用程序的运行状态。"
+    state.openWorkspace(text: sentence, autoRun: false, focusComposer: false)
+    state.registry.removeAll()
+    state.registry.register(AppWordLookupEngine(id: "translator", requests: requests,
+                                                translated: "latency", supportsLookup: false))
+    state.registry.register(AppWordLookupEngine(id: "dictionary", requests: requests, translated: "延迟"))
+
+    let result = try #require(await state.lookupLearningSelection(
+        "延迟", contextText: sentence, providerID: "translator", usesTranslation: false
+    ))
+    let calls = await requests.calls
+
+    #expect(result.providerId == "translator")
+    #expect(calls.map(\.providerID) == ["dictionary", "translator"])
+    let fallback = try #require(calls.last?.request)
+    #expect(fallback.mode == .translate)
+    #expect(fallback.text == "延迟")
+    #expect(fallback.from == .zh)
+    #expect(fallback.to == .en)
+}
+
+@MainActor
+@Test func privateLearningLookupUsesOnlyOnDeviceProviders() async throws {
+    let state = makeContextTestState()
+    let requests = AppWordLookupRequests()
+    state.openWorkspace(text: "Network latency increased.", autoRun: false, focusComposer: false,
+                        profile: .privateLocal)
+    state.registry.removeAll()
+    state.registry.register(AppWordLookupEngine(id: "openai", requests: requests, translated: "响应时间"))
+    state.registry.register(AppWordLookupEngine(id: "ollama", requests: requests, translated: "迟滞",
+                                                modelName: "glm-5:cloud"))
+    state.registry.register(AppWordLookupEngine(id: "apple", requests: requests, translated: "延迟",
+                                                supportsLookup: false))
+
+    let result = try #require(await state.lookupLearningSelection(
+        "latency", contextText: state.sourceDraft, providerID: "openai", usesTranslation: false
+    ))
+    let calls = await requests.calls
+
+    #expect(result.providerId == "apple")
+    #expect(calls.map(\.providerID) == ["apple"])
+    #expect(calls.first?.request.context?.privacyPolicy == .localOnly)
+}
+
+@MainActor
 @Test func disabledEnginesShowRecoveryAndKeepTheSource() {
     let state = makeContextTestState()
     state.translate("Keep this draft")
@@ -735,6 +818,33 @@ private actor AppProviderCalls {
 private actor AppDirectionRequests {
     var requests: [TranslateRequest] = []
     func record(_ request: TranslateRequest) { requests.append(request) }
+}
+
+private actor AppWordLookupRequests {
+    var calls: [(providerID: String, request: TranslateRequest)] = []
+
+    func record(_ providerID: String, _ request: TranslateRequest) {
+        calls.append((providerID, request))
+    }
+}
+
+private struct AppWordLookupEngine: TranslationProvider {
+    let id: String
+    let requests: AppWordLookupRequests
+    var translated = ""
+    var definitions: [Definition]? = nil
+    var failure: ProviderError? = nil
+    var supportsLookup = true
+    var modelName: String? = nil
+    var displayName: String { id }
+    let supportedLanguages: [Language] = [.auto, .en, .zh]
+    var capabilities: ProviderCapabilities { ProviderCapabilities(supportsLookup: supportsLookup) }
+
+    func translate(_ request: TranslateRequest) async throws -> TranslateResult {
+        await requests.record(id, request)
+        if let failure { throw failure }
+        return TranslateResult(providerId: id, translated: translated, definitions: definitions)
+    }
 }
 
 private struct AppDirectionFixtureEngine: TranslationProvider {

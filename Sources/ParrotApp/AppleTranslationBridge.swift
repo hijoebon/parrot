@@ -225,6 +225,11 @@ final class AppAppleTranslationEngine: HTTPTranslationEngine, @unchecked Sendabl
         super.init(id: "apple", displayName: L("系统翻译"), session: session)
     }
 
+    func hasInstalledLanguages(for req: TranslateRequest) async -> Bool {
+        let from: Language? = req.from == .auto ? nil : req.from
+        return (try? await preparation(text: req.text, from: from, to: req.to))?.required == false
+    }
+
     override func translate(_ req: TranslateRequest) async throws -> TranslateResult {
         let from: Language? = req.from == .auto ? nil : req.from
         let preparation = try await preparation(text: req.text, from: from, to: req.to)
@@ -290,6 +295,8 @@ final class AppAppleTranslationEngine: HTTPTranslationEngine, @unchecked Sendabl
     init(session: URLSession = .shared) {
         super.init(id: "apple", displayName: L("系统翻译"), session: session)
     }
+
+    func hasInstalledLanguages(for req: TranslateRequest) async -> Bool { false }
 
     override func translate(_ req: TranslateRequest) async throws -> TranslateResult {
         throw ProviderError.unsupportedLanguage

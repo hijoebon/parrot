@@ -26,10 +26,9 @@ struct ResultView: View {
 
     @State private var feedbackText: String = ""
     @State private var sourceComposerFocused: Bool = false
-    @State private var vocabularySelection = ""
-    @State private var vocabularySelectionContext = ""
-    @State private var vocabularySelectionProviderID = ""
-    @State private var vocabularySelectionUsesTranslation = false
+    @State private var vocabularySelection: WorkspaceVocabularySelection?
+    @State private var selectionLookup: WorkspaceSelectionLookup?
+    @State private var selectionLookupRetry = 0
     @State private var vocabularyDraft: WorkspaceVocabularyDraft?
 
     init(
@@ -74,17 +73,25 @@ struct ResultView: View {
         .onDisappear {
             sourceComposerFocused = false
             state.setComposerFocused(false)
+            clearVocabularySelection()
         }
         .onChange(of: state.sourceDraft) { _ in clearVocabularySelection() }
         .onChange(of: state.sourceText) { _ in clearVocabularySelection() }
         .onChange(of: state.outcomes.map { [$0.providerId, $0.result?.translated ?? ""].joined(separator: "\u{0}") }) { _ in
-            if vocabularySelectionUsesTranslation,
+            if let selection = vocabularySelection, selection.usesTranslation,
                !state.outcomes.contains(where: {
-                   $0.providerId == vocabularySelectionProviderID
-                       && $0.result?.translated == vocabularySelectionContext
+                   $0.providerId == selection.providerID && $0.result?.translated == selection.context
                }) {
                 clearVocabularySelection()
             }
+        }
+        .onChange(of: state.sourceLanguage) { _ in clearVocabularySelection() }
+        .onChange(of: state.targetLanguage) { _ in clearVocabularySelection() }
+        .onChange(of: state.contextProfile) { _ in clearVocabularySelection() }
+        .onChange(of: state.manualLearningSelectionRevision) { _ in clearVocabularySelection() }
+        .task(id: selectionLookupRequest) { [selectionLookupRequest] in
+            guard let request = selectionLookupRequest else { return }
+            await lookUpSelection(request)
         }
         .onExitCommand {
             if vocabularyDraft != nil { vocabularyDraft = nil } else { onClose() }
@@ -277,7 +284,12 @@ struct ResultView: View {
                 },
                 onRetry: { state.retryProvider(outcome.providerId) },
                 onConfigure: { onConfigureProvider(outcome.providerId) }
-            )
+            ) {
+                if let selection = previewSelection, selection.usesTranslation,
+                   selection.providerID == outcome.providerId {
+                    vocabularyPreview(for: selection)
+                }
+            }
         case .pending(let provider):
             PendingOutcomeCard(provider: provider)
         }
@@ -408,49 +420,17 @@ struct ResultView: View {
                     .font(Theme.Font.callout.weight(.medium))
                     .foregroundStyle(Theme.Palette.label2)
                 Spacer(minLength: 0)
-                Button(action: presentVocabularyEditor) {
-                    Label(L(vocabularyEntry == nil ? "加入单词本" : "已加入单词本"),
-                          systemImage: vocabularyEntry == nil ? "bookmark" : "bookmark.fill")
-                        .font(Theme.Font.callout)
-                }
-                .buttonStyle(.borderless)
-                .disabled(vocabularyTerm.isEmpty)
-                .help(L(vocabularyTerm.isEmpty ? "选中单词或短语后加入单词本" : "编辑单词与释义"))
-                .accessibilityIdentifier("workspace.addToVocabulary")
-                .popover(item: $vocabularyDraft, arrowEdge: .bottom) { draft in
-                    VocabularyEntryEditor(
-                        title: draft.entryID == nil ? "加入单词本" : "编辑单词",
-                        term: draft.term,
-                        meaning: draft.meaning,
-                        sourceSentence: draft.sourceSentence,
-                        onCancel: { vocabularyDraft = nil },
-                        onSave: { term, meaning, sentence in
-                            let id: String?
-                            if let entryID = draft.entryID {
-                                id = settings.updateLearningVocabularyEntry(
-                                    entryID, term: term, meaning: meaning, sourceSentence: sentence
-                                )
-                            } else {
-                                id = settings.addLearningVocabularyTerm(
-                                    term: term, meaning: meaning, sourceSentence: sentence,
-                                    sceneLabel: "工作区表达"
-                                )
-                            }
-                            if id != nil {
-                                vocabularyDraft = nil
-                                showFeedback(draft.entryID == nil ? "已加入单词本" : "已保存修改")
-                            }
-                            return id
-                        },
-                        lookup: { term in
-                            await state.lookupLearningSelection(
-                                term, contextText: draft.sourceSentence,
-                                providerID: draft.providerID,
-                                usesTranslation: draft.usesTranslation
-                            )?.translated
-                        },
-                        clearInitialMeaningOnTermChange: draft.entryID == nil
-                    )
+                if previewSelection == nil {
+                    Button { presentVocabularyEditor(selection: vocabularySelection) } label: {
+                        Label(L(vocabularyEntry == nil ? "加入单词本" : "已加入单词本"),
+                              systemImage: vocabularyEntry == nil ? "bookmark" : "bookmark.fill")
+                            .font(Theme.Font.callout)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(vocabularyTerm.isEmpty)
+                    .help(L(vocabularyTerm.isEmpty ? "选中单词或短语后加入单词本" : "编辑单词与释义"))
+                    .accessibilityIdentifier("workspace.addToVocabulary")
+                    .popover(item: vocabularyEditorBinding(for: nil), arrowEdge: .bottom, content: vocabularyEditor)
                 }
             }
             ZStack(alignment: .topLeading) {
@@ -473,7 +453,7 @@ struct ResultView: View {
                     },
                     onSelectionChange: { selection in
                         updateVocabularySelection(selection, context: state.sourceDraft,
-                                                  providerID: state.primarySuccessfulOutcome?.providerId ?? "",
+                                                  providerID: "",
                                                   usesTranslation: false)
                     }
                 )
@@ -490,6 +470,9 @@ struct ResultView: View {
                     .strokeBorder(sourceComposerFocused ? Theme.Palette.accent.opacity(0.55) : Theme.Palette.hairline,
                                   lineWidth: sourceComposerFocused ? 1 : 0.5)
             )
+            if let selection = previewSelection, !selection.usesTranslation {
+                vocabularyPreview(for: selection)
+            }
             HStack {
                 if vocabularyTerm.isEmpty && !state.sourceDraftTrimmed.isEmpty {
                     Text(L("选中单词或短语后加入单词本"))
@@ -549,11 +532,10 @@ struct ResultView: View {
     }
 
     private var vocabularyTerm: String {
-        let text = vocabularySelection.isEmpty ? state.sourceDraftTrimmed
-            : LearningRecommendationEngine.normalizedVocabularyTerm(vocabularySelection)
-        // A paragraph is context. Ask the user to select the expression to keep.
+        if let vocabularySelection { return vocabularySelection.term }
+        let text = state.sourceDraftTrimmed
         guard text.count <= 160, !text.contains("\n") else { return "" }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text
     }
 
     private var vocabularyEntry: LearningVocabularyEntry? {
@@ -561,43 +543,200 @@ struct ResultView: View {
     }
 
     private func clearVocabularySelection() {
-        vocabularySelection = ""
-        vocabularySelectionContext = ""
-        vocabularySelectionProviderID = ""
-        vocabularySelectionUsesTranslation = false
+        vocabularySelection = nil
+        selectionLookup = nil
+        selectionLookupRetry = 0
     }
 
     private func updateVocabularySelection(_ selection: String, context: String,
                                            providerID: String, usesTranslation: Bool) {
         // An inactive text view clearing its selection must not erase a newer selection.
         if selection.isEmpty {
-            guard vocabularySelectionUsesTranslation == usesTranslation,
-                  vocabularySelectionContext == context,
-                  !usesTranslation || vocabularySelectionProviderID == providerID else { return }
+            guard let active = vocabularySelection, active.usesTranslation == usesTranslation,
+                  active.context == context, active.providerID == providerID else { return }
             clearVocabularySelection()
             return
         }
-        vocabularySelection = selection
-        vocabularySelectionContext = context
-        vocabularySelectionProviderID = providerID
-        vocabularySelectionUsesTranslation = usesTranslation
+        let term = LearningRecommendationEngine.normalizedVocabularyTerm(selection)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?()[]{}\"'“”‘’，。；：！？（）「」"))
+        guard !term.isEmpty, term.count <= 160 else {
+            clearVocabularySelection()
+            return
+        }
+        let next = WorkspaceVocabularySelection(term: term, context: context, providerID: providerID,
+                                                usesTranslation: usesTranslation)
+        guard next != vocabularySelection else { return }
+        clearVocabularySelection()
+        vocabularySelection = next
     }
 
-    private func presentVocabularyEditor() {
-        let term = vocabularyTerm
+    private var previewSelection: WorkspaceVocabularySelection? {
+        settings.learningRecognitionEnabled ? vocabularySelection : nil
+    }
+
+    private func availableMeaning(for selection: WorkspaceVocabularySelection) -> String? {
+        if !selection.usesTranslation,
+           selection.term == state.committedSourceTrimmed,
+           !state.isSourceDirty, state.isLookupMode,
+           let result = state.primarySuccessfulOutcome?.result,
+           let meaning = LearningRecommendationEngine.meaningForLookupResult(result, term: selection.term) {
+            return meaning
+        }
+        return LearningRecommendationEngine.expressionForManualSelection(
+            selection.term, contextText: selection.context, sourceText: state.sourceDraft,
+            occurrenceCounts: [:], allowGenericFallback: false
+        )?.meaning
+    }
+
+    private var selectionLookupRequest: WorkspaceSelectionLookupRequest? {
+        guard let selection = previewSelection, availableMeaning(for: selection) == nil else { return nil }
+        return WorkspaceSelectionLookupRequest(selection: selection, retry: selectionLookupRetry)
+    }
+
+    private func lookUpSelection(_ request: WorkspaceSelectionLookupRequest) async {
+        // Wait for the selection to settle before starting a provider request.
+        do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+        guard selectionLookupRequest == request else { return }
+        let selection = request.selection
+        let result = await state.lookupLearningSelection(
+            selection.term, contextText: selection.context,
+            providerID: lookupProviderID(for: selection), usesTranslation: selection.usesTranslation
+        )
+        guard !Task.isCancelled, selectionLookupRequest == request else { return }
+        selectionLookup = WorkspaceSelectionLookup(
+            request: request,
+            meaning: result.flatMap { LearningRecommendationEngine.meaningForLookupResult($0, term: selection.term) }
+        )
+    }
+
+    private func vocabularyPreview(for selection: WorkspaceVocabularySelection) -> some View {
+        let lookup = selectionLookup.flatMap { $0.request == selectionLookupRequest ? $0 : nil }
+        let meaning = availableMeaning(for: selection) ?? lookup?.meaning
+        let saved = settings.learningVocabularyEntry(for: selection.term) != nil
+        return VStack(alignment: .leading, spacing: Theme.Spacing.s8) {
+            HStack(spacing: Theme.Spacing.s8) {
+                Text(selection.term)
+                    .font(Theme.Font.callout.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if lookup != nil, meaning == nil {
+                    Button(L("重试")) { selectionLookupRetry += 1 }
+                        .buttonStyle(.borderless)
+                }
+                if saved || meaning != nil || lookup != nil {
+                    Button {
+                        if let meaning, !saved {
+                            if settings.addLearningVocabularyTerm(
+                                term: selection.term, meaning: meaning, sourceSentence: selection.context,
+                                sceneLabel: "工作区表达"
+                            ) != nil {
+                                showFeedback("已加入单词本")
+                            }
+                        } else {
+                            presentVocabularyEditor(selection: selection, meaning: meaning, inline: true)
+                        }
+                    } label: {
+                        Label(L(saved ? "已加入单词本" : "加入单词本"),
+                              systemImage: saved ? "bookmark.fill" : "bookmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L(saved ? "编辑单词与释义" : "加入单词本"))
+                    .accessibilityIdentifier("workspace.addSelectedWord")
+                    .popover(item: vocabularyEditorBinding(for: selection), arrowEdge: .bottom, content: vocabularyEditor)
+                }
+            }
+            if let meaning {
+                Text(meaning)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("workspace.selectionDefinition")
+            } else if lookup != nil {
+                Text(L("未能获取释义，可手动填写。"))
+                    .foregroundStyle(Theme.Palette.label2)
+            } else {
+                HStack(spacing: Theme.Spacing.s8) {
+                    ProgressView().controlSize(.small)
+                    Text(L("正在查询释义"))
+                }
+                .foregroundStyle(Theme.Palette.label2)
+            }
+        }
+        .font(Theme.Font.callout)
+        .padding(Theme.Spacing.s12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.Palette.bgControl, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+    }
+
+    private func presentVocabularyEditor(
+        selection: WorkspaceVocabularySelection?, meaning: String? = nil, inline: Bool = false
+    ) {
+        let term = selection?.term ?? vocabularyTerm
         guard !term.isEmpty else { return }
-        let entry = vocabularyEntry
-        let usesWholeSource = !vocabularySelectionUsesTranslation
+        let entry = settings.learningVocabularyEntry(for: term)
+        let usesWholeSource = selection?.usesTranslation != true
             && term == state.committedSourceTrimmed && !state.isSourceDirty
+        let wholeSourceMeaning = usesWholeSource ? (state.isLookupMode
+            ? state.primarySuccessfulOutcome?.result.flatMap {
+                LearningRecommendationEngine.meaningForLookupResult($0, term: term)
+            } : state.primaryActionTranslatedText) : nil
         vocabularyDraft = WorkspaceVocabularyDraft(
+            anchorSelection: inline ? selection : nil,
             entryID: entry?.id,
             term: entry?.term ?? term,
-            meaning: entry?.meaning ?? (usesWholeSource ? state.primaryActionTranslatedText : ""),
-            sourceSentence: entry?.sourceSentence ?? (vocabularySelection.isEmpty
-                ? state.sourceDraftTrimmed : vocabularySelectionContext),
-            providerID: vocabularySelectionProviderID.isEmpty
-                ? (state.primarySuccessfulOutcome?.providerId ?? "") : vocabularySelectionProviderID,
-            usesTranslation: vocabularySelectionUsesTranslation
+            meaning: entry?.meaning ?? meaning ?? wholeSourceMeaning ?? "",
+            sourceSentence: entry?.sourceSentence ?? selection?.context ?? state.sourceDraftTrimmed,
+            providerID: lookupProviderID(for: selection),
+            usesTranslation: selection?.usesTranslation ?? false
+        )
+    }
+
+    private func lookupProviderID(for selection: WorkspaceVocabularySelection?) -> String {
+        if let selection, selection.usesTranslation { return selection.providerID }
+        return state.primarySuccessfulOutcome?.providerId ?? ""
+    }
+
+    private func vocabularyEditorBinding(for selection: WorkspaceVocabularySelection?) -> Binding<WorkspaceVocabularyDraft?> {
+        Binding(
+            get: { vocabularyDraft?.anchorSelection == selection ? vocabularyDraft : nil },
+            set: { draft in
+                if draft != nil || vocabularyDraft?.anchorSelection == selection { vocabularyDraft = draft }
+            }
+        )
+    }
+
+    private func vocabularyEditor(_ draft: WorkspaceVocabularyDraft) -> some View {
+        VocabularyEntryEditor(
+            title: draft.entryID == nil ? "加入单词本" : "编辑单词",
+            term: draft.term,
+            meaning: draft.meaning,
+            sourceSentence: draft.sourceSentence,
+            onCancel: { vocabularyDraft = nil },
+            onSave: { term, meaning, sentence in
+                let id: String?
+                if let entryID = draft.entryID {
+                    id = settings.updateLearningVocabularyEntry(
+                        entryID, term: term, meaning: meaning, sourceSentence: sentence
+                    )
+                } else {
+                    id = settings.addLearningVocabularyTerm(
+                        term: term, meaning: meaning, sourceSentence: sentence,
+                        sceneLabel: "工作区表达"
+                    )
+                }
+                if id != nil {
+                    vocabularyDraft = nil
+                    showFeedback(draft.entryID == nil ? "已加入单词本" : "已保存修改")
+                }
+                return id
+            },
+            lookup: { term in
+                let result = await state.lookupLearningSelection(
+                    term, contextText: draft.sourceSentence, providerID: draft.providerID,
+                    usesTranslation: draft.usesTranslation
+                )
+                return result.flatMap { LearningRecommendationEngine.meaningForLookupResult($0, term: term) }
+            },
+            clearInitialMeaningOnTermChange: draft.entryID == nil
         )
     }
 
@@ -671,8 +810,26 @@ struct ResultView: View {
 
 }
 
+private struct WorkspaceVocabularySelection: Equatable {
+    let term: String
+    let context: String
+    let providerID: String
+    let usesTranslation: Bool
+}
+
+private struct WorkspaceSelectionLookupRequest: Equatable {
+    let selection: WorkspaceVocabularySelection
+    let retry: Int
+}
+
+private struct WorkspaceSelectionLookup {
+    let request: WorkspaceSelectionLookupRequest
+    let meaning: String?
+}
+
 private struct WorkspaceVocabularyDraft: Identifiable {
     let id = UUID()
+    let anchorSelection: WorkspaceVocabularySelection?
     let entryID: String?
     let term: String
     let meaning: String
@@ -1119,7 +1276,7 @@ private struct PolishVariantsView: View {
 
 // MARK: - Provider slots
 
-private struct TranslationOutcomeCard: View {
+private struct TranslationOutcomeCard<SelectionPreview: View>: View {
     let outcome: AggregatedOutcome
     let isPrimary: Bool
     let isSlow: Bool
@@ -1131,6 +1288,7 @@ private struct TranslationOutcomeCard: View {
     let onSelectionChange: (String) -> Void
     let onRetry: () -> Void
     let onConfigure: () -> Void
+    @ViewBuilder let selectionPreview: () -> SelectionPreview
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s12) {
@@ -1185,6 +1343,7 @@ private struct TranslationOutcomeCard: View {
             }
             if let result = outcome.result {
                 TranslationBody(result: result, lineLimit: nil, onSelectionChange: onSelectionChange)
+                selectionPreview()
                 HStack(spacing: Theme.Spacing.s8) {
                     Spacer(minLength: 0)
                     if let onCopyAndReturn {

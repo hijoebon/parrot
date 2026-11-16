@@ -946,19 +946,46 @@ final class AppState: ObservableObject {
         usesTranslation: Bool
     ) async -> TranslateResult? {
         let term = selection.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty,
-              let provider = lookupProvider(preferredID: providerID) else { return nil }
-        let direction = lookupDirection(usesTranslation: usesTranslation)
-        let req = TranslateRequest(
-            text: lookupRequestText(term: term, contextText: contextText, providerID: provider.id),
-            from: direction.from,
-            to: direction.to,
-            mode: .lookup,
-            terminology: nil,
-            context: TranslationContext.default(mode: .lookup, origin: .lookup, text: term)
+        guard !term.isEmpty else { return nil }
+        let policy = privacyPolicy(for: contextProfile)
+        let context = TranslationContext(
+            profile: .quickTranslate,
+            origin: .lookup,
+            privacyPolicy: policy,
+            routingHints: ProviderRoutingHints(allowedProviderIDs: policy == .localOnly ? lookupLocalProviderIDs() : nil)
         )
-        let outcome = await TranslationCoordinator.runProvider(provider, req: req, baseTimeout: 15)
-        return outcome.result
+        let providers = routedActiveProviders(for: context)
+        let lookupProviders = providers.filter { $0.capabilities.supportsLookup }
+        let preferred = lookupProviders.filter { $0.id == providerID }
+        let orderedProviders = preferred + lookupProviders.filter { $0.id != providerID }
+            + providers.filter { !$0.capabilities.supportsLookup }
+        let direction = lookupDirection(term: term, contextText: contextText, usesTranslation: usesTranslation)
+        let sessionID = UUID()
+
+        for provider in orderedProviders {
+            guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
+            let supportsLookup = provider.capabilities.supportsLookup
+            let request = TranslateRequest(
+                text: supportsLookup ? lookupRequestText(term: term, contextText: contextText, providerID: provider.id) : term,
+                from: direction.from,
+                to: direction.to,
+                mode: supportsLookup ? .lookup : .translate,
+                context: context,
+                sessionID: sessionID
+            )
+            // Choosing a word should never open the system's language download dialog.
+            if #available(macOS 15.0, *), let apple = provider as? AppAppleTranslationEngine {
+                guard await apple.hasInstalledLanguages(for: request) else { continue }
+                guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
+            }
+            let outcome = await TranslationCoordinator.runProvider(provider, req: request, baseTimeout: 15)
+            guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
+            if let result = outcome.result,
+               LearningRecommendationEngine.meaningForLookupResult(result, term: term) != nil {
+                return result
+            }
+        }
+        return nil
     }
 
     func setContextProfile(_ profile: TranslationContextProfile) {
@@ -1456,19 +1483,40 @@ final class AppState: ObservableObject {
         currentTranslationID = UUID()
     }
 
-    private func lookupProvider(preferredID: String) -> TranslationProvider? {
-        if let provider = registry.provider(id: preferredID),
-           provider.capabilities.supportsLookup {
-            return provider
+    private func lookupLocalProviderIDs() -> [String] {
+        let endpoint = settings.ollamaEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = URL(string: endpoint)?.host?.lowercased()
+        let isLoopback = endpoint.isEmpty || host == "localhost" || host == "127.0.0.1"
+            || host == "[::1]" || host == "::1"
+        return registry.activeProviders().compactMap { provider in
+            switch EngineModelConfig.baseEngineID(forProviderID: provider.id) {
+            case "apple":
+                return provider.id
+            case "ollama":
+                let model = provider.modelName?.lowercased() ?? ""
+                guard isLoopback, !model.hasSuffix(":cloud"), !model.hasSuffix("-cloud") else { return nil }
+                return provider.id
+            default:
+                return nil
+            }
         }
-        return registry.activeProviders().first { $0.capabilities.supportsLookup }
     }
 
-    private func lookupDirection(usesTranslation: Bool) -> (from: Language, to: Language) {
+    private func lookupDirection(term: String, contextText: String, usesTranslation: Bool) -> (from: Language, to: Language) {
         let resolvedSource = sourceLanguage == .auto ? detectedSource : sourceLanguage
         if usesTranslation {
             let target = resolvedSource == .auto ? Language.en : resolvedSource
             return (from: targetLanguage, to: target)
+        }
+        let context = contextText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sourceLanguage == .auto, resolvedSource == .auto || context != committedSourceTrimmed {
+            let direction = directionResolver.resolve(
+                text: context.isEmpty ? term : context,
+                from: sourceLanguage,
+                to: settings.targetLanguage,
+                allowTargetAdjustment: !hasExplicitWorkspaceTarget
+            )
+            return (from: direction.from, to: direction.to)
         }
         return (from: resolvedSource, to: targetLanguage)
     }
