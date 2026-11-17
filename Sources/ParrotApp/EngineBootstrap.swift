@@ -56,7 +56,7 @@ enum EngineBootstrap {
         }
 
         registerLLMModels(registry, makeProvider: { OpenAIEngine() }, key: keyIfNeeded(settings.openAIEnabled, settings.openAIKey), enabled: settings.openAIEnabled, settings: settings, engineID: "openai", defaultModel: "gpt-4o-mini", endpoint: settings.openAIEndpoint)
-        registerLLMModels(registry, makeProvider: { OpenCodeGoEngine() }, key: keyIfNeeded(settings.openCodeEnabled, settings.openCodeKey), enabled: settings.openCodeEnabled, settings: settings, engineID: "opencode", defaultModel: "glm-5.1")
+        registerLLMModels(registry, makeProvider: { OpenCodeGoEngine() }, key: keyIfNeeded(settings.openCodeEnabled, settings.openCodeKey), enabled: settings.openCodeEnabled, settings: settings, engineID: "opencode", defaultModel: OpenCodeGoEngine.recommendedModel)
         registerLLMModels(registry, makeProvider: { DeepSeekEngine() }, key: keyIfNeeded(settings.deepSeekEnabled, settings.deepSeekKey), enabled: settings.deepSeekEnabled, settings: settings, engineID: "deepseek", defaultModel: "deepseek-chat")
         registerLLMModels(registry, makeProvider: { GeminiEngine() }, key: keyIfNeeded(settings.geminiEnabled, settings.geminiKey), enabled: settings.geminiEnabled, settings: settings, engineID: "gemini", defaultModel: "gemini-2.0-flash")
         registerLLMModels(registry, makeProvider: { GroqEngine() }, key: keyIfNeeded(settings.groqEnabled, settings.groqKey), enabled: settings.groqEnabled, settings: settings, engineID: "groq", defaultModel: "llama-3.3-70b-versatile")

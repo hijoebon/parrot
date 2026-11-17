@@ -4,11 +4,17 @@ import ApplicationServices
 /// Captures the currently selected text from the frontmost app.
 /// Strategy: Accessibility API first; fall back to synthesizing ⌘C and reading the pasteboard.
 enum SelectionCapture {
+    struct Result: Sendable {
+        let text: String
+        let source: LearningVocabularySource?
+    }
 
     @MainActor
-    static func selectedText(from processIdentifier: pid_t? = nil) async -> String? {
-        guard let targetPID = processIdentifier ?? NSWorkspace.shared.frontmostApplication?.processIdentifier,
-              targetPID != getpid() else {
+    static func capture(from sourceApp: NSRunningApplication) async -> Result? {
+        let targetPID = sourceApp.processIdentifier
+        let appID = sourceApp.bundleIdentifier
+        let appName = sourceApp.localizedName
+        guard targetPID != getpid() else {
             DebugLog.log("selection-capture: skipped no external source")
             return nil
         }
@@ -16,45 +22,52 @@ enum SelectionCapture {
         // Accessibility calls are synchronous IPC. An unresponsive source app must
         // not freeze Parrot's main thread while the shortcut is being handled.
         let ax = await Task.detached(priority: .userInitiated) {
-            selectedTextViaAccessibility(from: targetPID)
+            selectionViaAccessibility(from: targetPID, appID: appID, appName: appName)
         }.value
         guard !Task.isCancelled else {
             DebugLog.log("selection-capture: cancelled after accessibility read")
             return nil
         }
-        DebugLog.log("  AX path -> \(ax.map { "len=\($0.count)" } ?? "nil")")
-        if let ax, !ax.isEmpty {
-            return ax
+        DebugLog.log("  AX path -> \(ax.text.map { "len=\($0.count)" } ?? "nil")")
+        if let text = ax.text {
+            return Result(text: text, source: ax.source)
         }
         let copy = await selectedTextViaCopy(from: targetPID)
         DebugLog.log("  Copy path -> \(copy.map { "len=\($0.count)" } ?? "nil")")
-        return copy
+        return copy.map { Result(text: $0, source: ax.source) }
     }
 
     /// Read the focused UI element's selected text through the Accessibility API.
     /// Skips elements owned by our own process (e.g. the floating result panel), whose
     /// selection would otherwise shadow the real frontmost app on repeat invocations.
-    private static func selectedTextViaAccessibility(from targetPID: pid_t) -> String? {
-        if let text = selectedText(
-            in: AXUIElementCreateApplication(targetPID),
-            expectedPID: targetPID,
-            route: "application"
-        ) { return text }
+    private static func selectionViaAccessibility(
+        from targetPID: pid_t,
+        appID: String?,
+        appName: String?
+    ) -> (text: String?, source: LearningVocabularySource?) {
+        let app = AXUIElementCreateApplication(targetPID)
+        let appFocus = focusedElement(in: app, expectedPID: targetPID, route: "application")
+        if let appFocus, let text = selectedText(in: appFocus) {
+            return (text, captureSource(focused: appFocus, app: app, appID: appID, appName: appName))
+        }
 
         // Some apps expose the focused element through the system-wide AX object
         // but not their application object. Never accept another app's selection.
-        return selectedText(
+        let systemFocus = focusedElement(
             in: AXUIElementCreateSystemWide(),
             expectedPID: targetPID,
             route: "system"
         )
+        let text = systemFocus.flatMap(selectedText(in:))
+        let source = captureSource(focused: systemFocus ?? appFocus, app: app, appID: appID, appName: appName)
+        return (text, source)
     }
 
-    private static func selectedText(in root: AXUIElement, expectedPID: pid_t, route: String) -> String? {
+    private static func focusedElement(in root: AXUIElement, expectedPID: pid_t, route: String) -> AXUIElement? {
         AXUIElementSetMessagingTimeout(root, 0.15)
         var focused: AnyObject?
         let focusStatus = AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused)
-        guard focusStatus == .success, let element = focused else {
+        guard focusStatus == .success, let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() else {
             DebugLog.log("selection-capture: AX \(route) focus unavailable status=\(focusStatus.rawValue)")
             return nil
         }
@@ -68,15 +81,86 @@ enum SelectionCapture {
             DebugLog.log("selection-capture: AX \(route) ignored focusPID=\(pid) expectedPID=\(expectedPID)")
             return nil
         }
+        return axElement
+    }
 
+    private static func selectedText(in axElement: AXUIElement) -> String? {
         var value: AnyObject?
         let selectionStatus = AXUIElementCopyAttributeValue(axElement, kAXSelectedTextAttribute as CFString, &value)
         guard selectionStatus == .success, let text = value as? String, !text.isEmpty else {
-            DebugLog.log("selection-capture: AX \(route) no selected text status=\(selectionStatus.rawValue)")
+            DebugLog.log("selection-capture: AX no selected text status=\(selectionStatus.rawValue)")
             return nil
         }
         return text
     }
+
+    private static func captureSource(
+        focused: AXUIElement?,
+        app: AXUIElement,
+        appID: String?,
+        appName: String?
+    ) -> LearningVocabularySource? {
+        // Source is optional. Bound the AX reads so slow apps cannot hold up text capture.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(90))
+        func attribute(_ name: CFString, of element: AXUIElement) -> AnyObject? {
+            guard clock.now < deadline, !Task.isCancelled else { return nil }
+            AXUIElementSetMessagingTimeout(element, 0.035)
+            var value: AnyObject?
+            guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return nil }
+            return value
+        }
+        func element(_ name: CFString, of parent: AXUIElement) -> AXUIElement? {
+            guard let value = attribute(name, of: parent), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            return (value as! AXUIElement)
+        }
+        func url(_ value: AnyObject?) -> URL? {
+            (value as? URL) ?? (value as? String).flatMap { URL(string: $0) }
+        }
+
+        let window = focused.flatMap { element(kAXWindowAttribute as CFString, of: $0) }
+            ?? element(kAXFocusedWindowAttribute as CFString, of: app)
+        var webArea: AXUIElement?
+        var ancestor: AXUIElement? = focused
+        for _ in 0..<16 {
+            guard let node = ancestor else { break }
+            let role = attribute(kAXRoleAttribute as CFString, of: node) as? String
+            if role == "AXWebArea" { webArea = node }
+            if role == kAXWindowRole as String { break }
+            ancestor = element(kAXParentAttribute as CFString, of: node)
+        }
+
+        // Reading the web area's URL avoids confusing an inline hyperlink with the page itself.
+        let pageURL = webArea.flatMap { url(attribute(kAXURLAttribute as CFString, of: $0)) }
+        let document = window.flatMap { attribute(kAXDocumentAttribute as CFString, of: $0) }
+        let location = pageURL ?? url(document) ?? window.flatMap { url(attribute(kAXURLAttribute as CFString, of: $0)) }
+        if let location, location.isFileURL {
+            return LearningVocabularySource(title: location.lastPathComponent)
+        }
+        if let path = document as? String, path.hasPrefix("/") {
+            return LearningVocabularySource(title: URL(fileURLWithPath: path).lastPathComponent)
+        }
+        if let documentName = document as? String, url(document)?.scheme == nil, pageURL == nil {
+            return LearningVocabularySource(title: documentName, url: location)
+        }
+
+        let webTitle = webArea.flatMap { attribute(kAXTitleAttribute as CFString, of: $0) as? String }
+        if let source = LearningVocabularySource(title: webTitle, url: location), source.title != nil {
+            return source
+        }
+
+        // Some native editors expose the document name only in the window title.
+        // Limit the fallback to document apps instead of saving arbitrary app chrome.
+        let canUseWindowTitle = webArea != nil || location != nil || appID.map(documentWindowAppIDs.contains) == true
+        let windowTitle = canUseWindowTitle
+            ? window.flatMap { attribute(kAXTitleAttribute as CFString, of: $0) as? String }
+            : nil
+        return LearningVocabularySource(title: windowTitle == appName ? nil : windowTitle, url: location)
+    }
+
+    private static let documentWindowAppIDs: Set<String> = [
+        "com.apple.iWork.Pages", "com.apple.Preview", "com.apple.TextEdit", "com.microsoft.Word"
+    ]
 
     /// Fallback: preserve the pasteboard, send ⌘C, read the copy, then restore.
     @MainActor

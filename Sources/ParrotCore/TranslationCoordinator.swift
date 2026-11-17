@@ -124,14 +124,14 @@ public actor TranslationCoordinator {
             let task = Task {
                 if strategy == .firstSuccessful {
                     var failedAttempts = 0
-                    for provider in providers {
+                    for (index, provider) in providers.enumerated() {
                         guard !Task.isCancelled, failedAttempts < 2 else { break }
-                        // A quick request must not inherit multi-minute comparison budgets.
-                        // Apple preparation remains interactive because it may request a download.
-                        let isApple = provider.id.components(separatedBy: "#").first == "apple"
+                        let backup = failedAttempts == 0 ? providers.dropFirst(index + 1).first : nil
                         let outcome = await Self.runProvider(
                             provider, req: req, baseTimeout: baseTimeout,
-                            maximumTimeout: isApple ? nil : baseTimeout
+                            maximumTimeout: Self.singleResultTimeout(
+                                for: provider, backup: backup, request: req, base: baseTimeout
+                            )
                         )
                         guard !Task.isCancelled else { break }
                         continuation.yield(outcome)
@@ -162,6 +162,25 @@ public actor TranslationCoordinator {
 
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func singleResultTimeout(
+        for provider: TranslationProvider,
+        backup: TranslationProvider?,
+        request: TranslateRequest,
+        base: TimeInterval
+    ) -> TimeInterval? {
+        let engine = provider.id.split(separator: "#").first
+        // Apple may ask the user to download a language pack before translating.
+        if engine == "apple" { return nil }
+        guard engine == "opencode", request.mode == .translate,
+              request.context?.origin == .selection, request.context?.profile == .quickTranslate,
+              request.text.count < 280, !request.text.contains("\n\n"),
+              let backup, backup.id != "apple",
+              !backup.capabilities.supportsStream, !backup.capabilities.supportsInterpretation,
+              backup.supportedLanguages.contains(request.from),
+              backup.supportedLanguages.contains(request.to) else { return base }
+        return min(5, base / 3)
     }
 
     /// Shares the execution plan with the UI so queued backups are not shown as active work.

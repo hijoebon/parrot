@@ -24,7 +24,7 @@ import ParrotCore
 }
 
 @MainActor
-@Test func shortBrowserSelectionUsesUnderstandProfile() {
+@Test func shortBrowserSelectionUsesQuickTranslationWithAdvancedFeaturesEnabled() {
     let state = makeContextTestState()
     state.settings.advancedFeaturesEnabled = true
     state.settings.contextRuleDocumentEnabled = true
@@ -38,7 +38,7 @@ import ParrotCore
         windowTitle: "A conversation"
     )
 
-    #expect(state.contextProfile == .understand)
+    #expect(state.contextProfile == .quickTranslate)
 }
 
 @MainActor
@@ -191,6 +191,47 @@ import ParrotCore
     let requests = await calls.requests
     #expect(requests.map(\.to) == [.zh, .en, .zh, .en])
     #expect(state.targetLanguage == .en)
+}
+
+@MainActor
+@Test func capturedSelectionDetectsBothDirectionsDespiteFixedInputDefaultAndWorkspaceOverride() async throws {
+    let state = makeContextTestState()
+    let calls = AppDirectionRequests()
+    let chinese = "今天天气很好，我们去公园散步。"
+    state.setDefaultLanguageDirection(sourceCode: "en", targetCode: "zh")
+    state.registry.removeAll()
+    state.registry.register(AppDirectionFixtureEngine(calls: calls))
+
+    state.openWorkspace(text: chinese, autoRun: true, focusComposer: false, origin: .selection)
+    try await waitForMVPTranslation(state)
+    #expect(state.sourceLanguage == .auto)
+    #expect(state.detectedSource == .zh)
+    #expect(state.targetLanguage == .en)
+
+    state.setLanguageDirection(sourceCode: "ru", targetCode: "ja")
+    try await waitForMVPTranslation(state)
+    #expect(!state.canRestoreCapturedTranslation(text: chinese))
+    #expect(state.settings.sourceLanguageCode == "en")
+    #expect(state.settings.targetLanguageCode == "zh")
+
+    state.openWorkspace(text: chinese, autoRun: true, focusComposer: false, origin: .selection)
+    try await waitForMVPTranslation(state)
+    #expect(state.canRestoreCapturedTranslation(text: chinese))
+
+    state.openWorkspace(text: "We went to the park for a walk.", autoRun: true,
+                        focusComposer: false, origin: .selection)
+    try await waitForMVPTranslation(state)
+    #expect(state.detectedSource == .en)
+    #expect(state.targetLanguage == .zh)
+
+    state.openManualInputWorkspace()
+    state.updateDraft(chinese)
+    state.translateDraft()
+    try await waitForMVPTranslation(state)
+
+    let requests = await calls.requests
+    #expect(requests.map(\.from) == [.zh, .ru, .zh, .en, .en])
+    #expect(requests.map(\.to) == [.en, .ja, .en, .zh, .zh])
 }
 
 @MainActor
@@ -450,6 +491,7 @@ import ParrotCore
 @MainActor
 @Test func historyWorkspaceRestoresLanguageDirection() {
     let state = makeContextTestState()
+    state.setDefaultLanguageDirection(sourceCode: "auto", targetCode: "zh")
     let record = TranslationRecord(
         sourceText: "Review the release note.",
         translated: "リリースノートを確認してください。",
@@ -463,6 +505,8 @@ import ParrotCore
     #expect(state.sourceDraft == record.sourceText)
     #expect(state.sourceLanguage == .en)
     #expect(state.targetLanguage == .ja)
+    #expect(state.settings.sourceLanguageCode == "auto")
+    #expect(state.settings.targetLanguageCode == "zh")
     #expect(state.currentOrigin == .history)
     #expect(state.sourceText == record.sourceText)
     #expect(state.primaryActionTranslatedText == record.translated)
@@ -588,22 +632,63 @@ import ParrotCore
 }
 
 @MainActor
-@Test func saveCurrentExpressionPersistsToLearningVocabulary() {
+@Test func saveCurrentExpressionPersistsCapturedVocabularySourceLocally() throws {
     let state = makeContextTestState()
     state.settings.learningVocabularyEntries = []
+    let url = try #require(URL(string: "https://example.com/launch#plan"))
+    let source = try #require(LearningVocabularySource(title: "Launch plan", url: url))
 
     state.openWorkspace(
         text: "ship it",
         autoRun: false,
         focusComposer: false,
-        origin: .selection
+        origin: .selection,
+        vocabularySource: source
     )
     let saved = state.saveCurrentExpression(translatedText: "发布它", sceneLabel: "测试摘录")
 
     #expect(saved)
     #expect(state.settings.learningVocabularyEntries.contains { entry in
-        entry.term == "ship it" && entry.meaning == "发布它" && entry.sceneLabel == "测试摘录"
+        entry.term == "ship it" && entry.meaning == "发布它" && entry.sceneLabel == "测试摘录" && entry.source == source
     })
+    #expect(state.currentContextSourceURL == nil)
+    #expect(state.currentContextWindowTitle == nil)
+}
+
+@MainActor
+@Test func vocabularySourceFollowsMatchingTextAndUpdatesOnRecapture() throws {
+    let state = makeContextTestState()
+    let first = try #require(LearningVocabularySource(title: "First document"))
+    let second = try #require(LearningVocabularySource(title: "Second document"))
+    let original = "First sentence.\nSecond sentence."
+    state.openWorkspace(text: original, autoRun: false, focusComposer: false,
+                        origin: .selection, vocabularySource: first)
+
+    #expect(state.vocabularySource(for: "First sentence.  Second sentence.") == first)
+    #expect(state.vocabularySource(for: "Second sentence.") == first)
+    state.updateDraft("An unrelated sentence typed here.")
+    #expect(state.vocabularySource(for: state.sourceDraft) == nil)
+
+    state.recordVocabularySource(second, for: original)
+    #expect(state.vocabularySource(for: original) == second)
+    state.recordVocabularySource(nil, for: original)
+    #expect(state.vocabularySource(for: original) == nil)
+
+    state.recordVocabularySource(first, for: original)
+    state.openManualInputWorkspace()
+    #expect(state.vocabularySource(for: original) == nil)
+}
+
+@MainActor
+@Test func explicitVocabularySourceURLRejectsNonWebDestinations() {
+    let state = makeContextTestState()
+    let original = "A quoted line."
+    let page = "https://example.com/page?chapter=4#start"
+    state.openWorkspace(text: original, autoRun: false, focusComposer: false, origin: .url, sourceURL: page)
+    #expect(state.vocabularySource(for: original)?.url?.absoluteString == page)
+
+    state.openWorkspace(text: original, autoRun: false, focusComposer: false, origin: .url, sourceURL: "file:///tmp/draft")
+    #expect(state.vocabularySource(for: original) == nil)
 }
 
 @MainActor

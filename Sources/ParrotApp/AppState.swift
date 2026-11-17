@@ -145,6 +145,7 @@ final class AppState: ObservableObject {
     @Published private(set) var currentContextSourceApp: String?
     @Published private(set) var currentContextWindowTitle: String?
     @Published private(set) var currentContextSourceURL: String?
+    @Published private var capturedVocabularySource: (source: LearningVocabularySource, text: String)?
     @Published var selectedPolishTone: PolishTone = .direct
     @Published private(set) var didCaptureFocusedInputDraft: Bool = false
     @Published var ocrCandidates: [OCRCandidateViewState] = []
@@ -178,7 +179,8 @@ final class AppState: ObservableObject {
     private var outcomeConfigurations: [String: TranslationConfigurationSnapshot] = [:]
     private var didSaveCurrentTranslation = false
     private var currentMode: TranslateMode = .translate
-    private var hasExplicitWorkspaceTarget = false
+    private var workspaceSourceOverride: Language?
+    private var workspaceTargetOverride: Language?
     private let directionResolver = TranslationDirectionResolver()
     private var learningHistoryRefreshGeneration = 0
     private static let slowProviderSoftTimeout: TimeInterval = 8
@@ -191,9 +193,31 @@ final class AppState: ObservableObject {
         sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    func recordVocabularySource(_ source: LearningVocabularySource?, for text: String) {
+        let originalText = Self.normalizedVocabularySourceText(text)
+        capturedVocabularySource = originalText.isEmpty ? nil : source.map { ($0, originalText) }
+    }
+
+    func vocabularySource(for sourceSentence: String) -> LearningVocabularySource? {
+        guard let capture = capturedVocabularySource else { return nil }
+        let sentence = Self.normalizedVocabularySourceText(sourceSentence)
+        guard !sentence.isEmpty, capture.text.contains(sentence) else { return nil }
+        return capture.source
+    }
+
+    private static func normalizedVocabularySourceText(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     var isSourceDirty: Bool {
         sourceDraftTrimmed != committedSourceTrimmed
     }
+
+    private var configuredSourceLanguage: Language {
+        if let workspaceSourceOverride { return workspaceSourceOverride }
+        return currentOrigin == .selection || currentOrigin == .lookup ? .auto : settings.sourceLanguage
+    }
+    private var configuredTargetLanguage: Language { workspaceTargetOverride ?? settings.targetLanguage }
 
     var canTranslateDraft: Bool {
         !sourceDraftTrimmed.isEmpty
@@ -332,10 +356,10 @@ final class AppState: ObservableObject {
     func applySettings() {
         // Keep the effective direction of displayed results when only provider
         // settings change (auto detection may have reversed the default target).
-        if appliedTranslationConfiguration?.requestOptions.source != settings.sourceLanguageCode {
-            sourceLanguage = settings.sourceLanguage
+        if workspaceSourceOverride == nil, appliedTranslationConfiguration?.requestOptions.source != settings.sourceLanguageCode {
+            sourceLanguage = configuredSourceLanguage
         }
-        if appliedTranslationConfiguration?.requestOptions.target != settings.targetLanguageCode {
+        if workspaceTargetOverride == nil, appliedTranslationConfiguration?.requestOptions.target != settings.targetLanguageCode {
             targetLanguage = settings.targetLanguage
         }
         reloadProviders()
@@ -379,6 +403,8 @@ final class AppState: ObservableObject {
         guard !captured.isEmpty, captured == committedSourceTrimmed else { return false }
         if isSourceDirty { return true }
         guard currentMode == .translate,
+              sourceLanguage == .auto,
+              workspaceSourceOverride == nil, workspaceTargetOverride == nil,
               currentRequestConfiguration != nil,
               !translationSettingsNeedRefresh else { return false }
         return isTranslating || outcomes.contains(where: \.isSuccess)
@@ -416,17 +442,44 @@ final class AppState: ObservableObject {
 
     func setLanguageDirection(sourceCode: String? = nil, targetCode: String? = nil) {
         if let sourceCode {
-            settings.sourceLanguageCode = sourceCode
+            workspaceSourceOverride = Self.sourceLanguage(for: sourceCode)
         }
         if let targetCode {
-            hasExplicitWorkspaceTarget = true
-            settings.targetLanguageCode = targetCode
+            workspaceTargetOverride = Language(code: targetCode)
         }
-        sourceLanguage = settings.sourceLanguage
-        targetLanguage = settings.targetLanguage
+        updateTranslationDirection()
+    }
+
+    func setDefaultLanguageDirection(sourceCode: String? = nil, targetCode: String? = nil) {
+        if let sourceCode {
+            settings.sourceLanguageCode = sourceCode
+            workspaceSourceOverride = nil
+        }
+        if let targetCode {
+            settings.targetLanguageCode = targetCode
+            workspaceTargetOverride = nil
+        }
+        updateTranslationDirection()
+    }
+
+    private func updateTranslationDirection() {
+        sourceLanguage = configuredSourceLanguage
+        targetLanguage = configuredTargetLanguage
         let text = sourceDraftTrimmed.isEmpty ? committedSourceTrimmed : sourceDraft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         translate(text, mode: currentMode)
+    }
+
+    private static func sourceLanguage(for code: String) -> Language {
+        code == "auto" ? .auto : Language(code: code)
+    }
+
+    private func resetWorkspaceLanguageDirection() {
+        workspaceSourceOverride = nil
+        workspaceTargetOverride = nil
+        sourceLanguage = configuredSourceLanguage
+        targetLanguage = settings.targetLanguage
+        detectedSource = .auto
     }
 
     private func loadPlugins() {
@@ -498,6 +551,7 @@ final class AppState: ObservableObject {
             if !hasContent {
                 currentMode = .translate
                 currentOrigin = .manualInput
+                capturedVocabularySource = nil
                 currentContextSourceApp = nil
                 currentContextWindowTitle = nil
                 currentContextSourceURL = nil
@@ -540,14 +594,19 @@ final class AppState: ObservableObject {
         profile: TranslationContextProfile? = nil,
         sourceApp: String? = nil,
         windowTitle: String? = nil,
-        sourceURL: String? = nil
+        sourceURL: String? = nil,
+        vocabularySource: LearningVocabularySource? = nil
     ) {
-        hasExplicitWorkspaceTarget = false
         currentMode = mode
         currentOrigin = origin
+        resetWorkspaceLanguageDirection()
         currentContextSourceApp = Self.cleanedMetadata(sourceApp)
         currentContextWindowTitle = Self.cleanedMetadata(windowTitle)
         currentContextSourceURL = Self.cleanedMetadata(sourceURL)
+        let linkedSource = origin == .url ? currentContextSourceURL
+            .flatMap { URL(string: $0) }
+            .flatMap { LearningVocabularySource(url: $0) } : nil
+        recordVocabularySource(vocabularySource ?? linkedSource, for: text)
         contextProfile = profile ?? defaultProfile(mode: mode, origin: origin, text: text)
         currentRequest = nil
         if origin != .ocr && origin != .screenshot && origin != .latestScreenshot {
@@ -571,18 +630,21 @@ final class AppState: ObservableObject {
         autoRun: Bool = false,
         sourceApp: String? = nil
     ) {
-        settings.sourceLanguageCode = record.sourceLang
-        settings.targetLanguageCode = record.targetLang
-        sourceLanguage = settings.sourceLanguage
-        targetLanguage = settings.targetLanguage
         openWorkspace(
             text: record.sourceText,
-            autoRun: autoRun,
+            autoRun: false,
             focusComposer: false,
             origin: .history,
             sourceApp: sourceApp
         )
-        guard !autoRun else { return }
+        workspaceSourceOverride = Self.sourceLanguage(for: record.sourceLang)
+        workspaceTargetOverride = Language(code: record.targetLang)
+        sourceLanguage = configuredSourceLanguage
+        targetLanguage = configuredTargetLanguage
+        if autoRun {
+            translateDraft()
+            return
+        }
         cancelTranslationWork()
         currentTranslationID = UUID()
         sourceText = record.sourceText
@@ -620,6 +682,7 @@ final class AppState: ObservableObject {
     func beginOCRRecognition(providerName: String) {
         currentMode = .translate
         currentOrigin = .ocr
+        capturedVocabularySource = nil
         currentContextSourceApp = nil
         currentContextWindowTitle = nil
         currentContextSourceURL = nil
@@ -640,13 +703,14 @@ final class AppState: ObservableObject {
     }
 
     func openOCRWorkspace(result: OCRResult, providerName: String) {
+        currentOrigin = .ocr
         if !isRecognizingOCR {
-            hasExplicitWorkspaceTarget = false
+            resetWorkspaceLanguageDirection()
         }
         cancelTranslationWork()
         isRecognizingOCR = false
         currentMode = .translate
-        currentOrigin = .ocr
+        capturedVocabularySource = nil
         currentContextSourceApp = nil
         currentContextWindowTitle = nil
         currentContextSourceURL = nil
@@ -734,6 +798,7 @@ final class AppState: ObservableObject {
     func openManualInputWorkspace(sourceApp: String? = nil, windowTitle: String? = nil) {
         currentMode = .translate
         currentOrigin = .manualInput
+        capturedVocabularySource = nil
         currentContextSourceApp = Self.cleanedMetadata(sourceApp)
         currentContextWindowTitle = Self.cleanedMetadata(windowTitle)
         currentContextSourceURL = nil
@@ -757,6 +822,7 @@ final class AppState: ObservableObject {
     ) {
         currentMode = .polish
         currentOrigin = .manualInput
+        capturedVocabularySource = nil
         currentContextSourceApp = Self.cleanedMetadata(sourceApp)
         currentContextWindowTitle = Self.cleanedMetadata(windowTitle)
         currentContextSourceURL = nil
@@ -815,7 +881,7 @@ final class AppState: ObservableObject {
         sourceText = trimmed
         sourceDraft = trimmed
         let direction = resolvedDirection(text: trimmed, mode: mode)
-        sourceLanguage = settings.sourceLanguage == .auto ? .auto : direction.from
+        sourceLanguage = configuredSourceLanguage
         targetLanguage = direction.to
         detectedSource = direction.detected
         isTranslating = true
@@ -961,9 +1027,11 @@ final class AppState: ObservableObject {
             + providers.filter { !$0.capabilities.supportsLookup }
         let direction = lookupDirection(term: term, contextText: contextText, usesTranslation: usesTranslation)
         let sessionID = UUID()
+        var remainingBudget: TimeInterval = 8
 
-        for provider in orderedProviders {
-            guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
+        for (index, provider) in orderedProviders.enumerated() {
+            guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile),
+                  remainingBudget > 0 else { return nil }
             let supportsLookup = provider.capabilities.supportsLookup
             let request = TranslateRequest(
                 text: supportsLookup ? lookupRequestText(term: term, contextText: contextText, providerID: provider.id) : term,
@@ -978,7 +1046,12 @@ final class AppState: ObservableObject {
                 guard await apple.hasInstalledLanguages(for: request) else { continue }
                 guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
             }
-            let outcome = await TranslationCoordinator.runProvider(provider, req: request, baseTimeout: 15)
+            let timeout = index == orderedProviders.count - 1 ? remainingBudget : min(4, remainingBudget)
+            let outcome = await TranslationCoordinator.runProvider(
+                provider, req: request, baseTimeout: timeout, maximumTimeout: timeout
+            )
+            // Charge provider time, so unrelated UI work does not consume a backup's budget.
+            remainingBudget -= Double(max(0, outcome.latencyMs)) / 1_000
             guard !Task.isCancelled, policy == privacyPolicy(for: contextProfile) else { return nil }
             if let result = outcome.result,
                LearningRecommendationEngine.meaningForLookupResult(result, term: term) != nil {
@@ -1279,13 +1352,13 @@ final class AppState: ObservableObject {
 
     private func resolvedDirection(text: String, mode: TranslateMode) -> ResolvedTranslationDirection {
         if mode == .polish {
-            return directionResolver.resolvePolish(text: text, from: settings.sourceLanguage)
+            return directionResolver.resolvePolish(text: text, from: configuredSourceLanguage)
         }
         return directionResolver.resolve(
             text: text,
-            from: settings.sourceLanguage,
-            to: settings.targetLanguage,
-            allowTargetAdjustment: !hasExplicitWorkspaceTarget
+            from: configuredSourceLanguage,
+            to: configuredTargetLanguage,
+            allowTargetAdjustment: workspaceTargetOverride == nil
         )
     }
 
@@ -1345,6 +1418,9 @@ final class AppState: ObservableObject {
         }
         if let ruleProfile {
             return ruleProfile
+        }
+        if mode == .translate, origin == .selection, text.count < 280, !text.contains("\n\n") {
+            return .quickTranslate
         }
         return TranslationContextProfile.defaultProfile(
             mode: mode,
@@ -1461,11 +1537,12 @@ final class AppState: ObservableObject {
     }
 
     private func resetTranslationSession(keepDraft: Bool) {
-        hasExplicitWorkspaceTarget = false
+        resetWorkspaceLanguageDirection()
         cancelTranslationWork()
         resetManualLearningSelection()
         if !keepDraft {
             sourceDraft = ""
+            capturedVocabularySource = nil
             clearOCRCandidates()
         }
         sourceText = ""
@@ -1473,7 +1550,6 @@ final class AppState: ObservableObject {
         pendingProviders = []
         slowProviderIDs = []
         isTranslating = false
-        detectedSource = .auto
         savedRecordId = nil
         isFavorite = false
         didSaveCurrentTranslation = false
@@ -1513,8 +1589,8 @@ final class AppState: ObservableObject {
             let direction = directionResolver.resolve(
                 text: context.isEmpty ? term : context,
                 from: sourceLanguage,
-                to: settings.targetLanguage,
-                allowTargetAdjustment: !hasExplicitWorkspaceTarget
+                to: configuredTargetLanguage,
+                allowTargetAdjustment: workspaceTargetOverride == nil
             )
             return (from: direction.from, to: direction.to)
         }
@@ -1608,7 +1684,8 @@ final class AppState: ObservableObject {
             outcomes = ResultQualityEvaluator.withRecommendation(outcomes: outcomes, request: currentRequest)
         }
 
-        if sourceLanguage == .auto, let detected = outcome.result?.detectedFrom {
+        if sourceLanguage == .auto, detectedSource == .auto,
+           let detected = outcome.result?.detectedFrom, detected != .auto {
             detectedSource = detected
         }
         if workspaceNotice?.primaryAction?.action == .retryTranslation {
@@ -1734,6 +1811,7 @@ final class AppState: ObservableObject {
             term: termSource,
             meaning: translated,
             sourceSentence: source,
+            source: vocabularySource(for: source),
             sceneLabel: sceneLabel
         )
         if savedID != nil {

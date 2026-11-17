@@ -452,7 +452,8 @@ private struct VocabularyView: View {
             if scope == .due && !item.isDue { return false }
             if scope == .favorites && !item.isFavorite { return false }
             guard !q.isEmpty else { return true }
-            return [item.expression.term, item.entry?.meaning ?? "", item.entry?.sourceSentence ?? ""]
+            return [item.expression.term, item.entry?.meaning ?? "", item.entry?.sourceSentence ?? "",
+                    item.entry?.source?.title ?? "", item.entry?.source?.url?.absoluteString ?? ""]
                 .contains { $0.localizedStandardContains(q) }
         }
         .sorted(by: comesBefore)
@@ -513,8 +514,10 @@ private struct VocabularyView: View {
                     meaning: "",
                     sourceSentence: "",
                     onCancel: { editor = nil },
-                    onSave: { term, meaning, source in
-                        let id = settings.addLearningVocabularyTerm(term: term, meaning: meaning, sourceSentence: source)
+                    onSave: { term, meaning, sentence, source in
+                        let id = settings.addLearningVocabularyTerm(
+                            term: term, meaning: meaning, sourceSentence: sentence, source: source
+                        )
                         if let id { finishSave(id) }
                         return id
                     }
@@ -525,9 +528,12 @@ private struct VocabularyView: View {
                     term: entry.term,
                     meaning: entry.meaning,
                     sourceSentence: entry.sourceSentence,
+                    source: entry.source,
                     onCancel: { editor = nil },
-                    onSave: { term, meaning, source in
-                        let id = settings.updateLearningVocabularyEntry(entry.id, term: term, meaning: meaning, sourceSentence: source)
+                    onSave: { term, meaning, sentence, source in
+                        let id = settings.updateLearningVocabularyEntry(
+                            entry.id, term: term, meaning: meaning, sourceSentence: sentence, source: source
+                        )
                         if let id { finishSave(id) }
                         return id
                     }
@@ -565,7 +571,7 @@ private struct VocabularyView: View {
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField(L("搜索单词、释义或原句"), text: $query)
+                TextField(L("搜索单词、释义、原句或来源"), text: $query)
                     .textFieldStyle(.plain)
                     .accessibilityIdentifier("vocabulary.search")
                 if !query.isEmpty {
@@ -764,10 +770,17 @@ private struct VocabularyView: View {
                         }
                     }
                     detailSection("释义", meaning, emptyText: "还没有释义，点“编辑”补充。")
-                    if !sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        detailSection("原句", sourceSentence, onSpeak: {
-                            Speaker.shared.speak(sourceSentence, language: .auto)
-                        })
+                    if !sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || item.entry?.source != nil {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if !sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                detailSection("原句", sourceSentence, onSpeak: {
+                                    Speaker.shared.speak(sourceSentence, language: .auto)
+                                })
+                            }
+                            if let source = item.entry?.source {
+                                sourceReference(source)
+                            }
+                        }
                     }
                     activitySection(item)
                     Divider()
@@ -820,6 +833,60 @@ private struct VocabularyView: View {
             .padding(.vertical, 14)
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func sourceReference(_ source: LearningVocabularySource) -> some View {
+        if let url = source.url {
+            let host = url.host ?? url.absoluteString
+            Link(destination: url) {
+                HStack(spacing: 7) {
+                    Image(systemName: "link")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(source.title ?? host)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if source.title != nil {
+                            Text(host)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                .font(.system(size: 12))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 6)
+                .background(Theme.Palette.bgControl, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+            }
+            .help(url.absoluteString)
+            .accessibilityLabel(L("打开来源：%@", source.title ?? host))
+            .accessibilityValue(host)
+            .accessibilityIdentifier("vocabulary.detail.sourceLink")
+            .contextMenu {
+                Button(L("复制来源链接")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                }
+            }
+        } else if let title = source.title {
+            Label {
+                Text(title)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "doc.text")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(L("来源文档：%@", title))
+            .accessibilityIdentifier("vocabulary.detail.sourceDocument")
+        }
     }
 
     private func activitySection(_ item: LearningVocabularyItem) -> some View {

@@ -27,11 +27,37 @@ struct LearningExpression: Identifiable {
     var masteryProgress: Double { min(1, max(0.2, Double(masteryStage) / 5.0)) }
 }
 
+struct LearningVocabularySource: Codable, Equatable, Sendable {
+    let title: String?
+    private let urlString: String?
+
+    var url: URL? { urlString.flatMap(URL.init(string:)).flatMap(Self.webURL) }
+
+    init?(title: String? = nil, url: URL? = nil) {
+        let title = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.title = title?.isEmpty == false ? title : nil
+        self.urlString = url.flatMap(Self.webURL)?.absoluteString
+        guard self.title != nil || urlString != nil else { return nil }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title
+        case urlString = "url"
+    }
+
+    private static func webURL(_ url: URL) -> URL? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil else { return nil }
+        return url
+    }
+}
+
 struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
     let id: String
     var term: String
     var meaning: String
     var sourceSentence: String
+    var source: LearningVocabularySource?
     var sceneLabel: String
     var occurrenceCount: Int
     var masteryStage: Int
@@ -55,6 +81,7 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
         term: String,
         meaning: String = "",
         sourceSentence: String = "",
+        source: LearningVocabularySource? = nil,
         sceneLabel: String = "手动添加",
         occurrenceCount: Int = 1,
         masteryStage: Int = 1,
@@ -72,6 +99,7 @@ struct LearningVocabularyEntry: Identifiable, Codable, Equatable {
         self.term = term
         self.meaning = meaning
         self.sourceSentence = sourceSentence
+        self.source = source
         self.sceneLabel = sceneLabel
         self.occurrenceCount = max(1, occurrenceCount)
         self.masteryStage = Self.clampedStage(masteryStage)

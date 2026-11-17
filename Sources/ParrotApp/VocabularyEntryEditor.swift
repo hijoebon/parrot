@@ -5,13 +5,17 @@ import SwiftUI
 struct VocabularyEntryEditor: View {
     let title: String
     let onCancel: () -> Void
-    let onSave: (String, String, String) -> String?
+    let onSave: (String, String, String, LearningVocabularySource?) -> String?
     let lookup: ((String) async -> String?)?
 
     @Environment(\.dismiss) private var dismiss
     @State private var term: String
     @State private var meaning: String
     @State private var sourceSentence: String
+    @State private var sourceTitle: String
+    @State private var sourceLink: String
+    @State private var isEditingSource = false
+    @State private var hasInvalidSourceLink = false
     @State private var errorMessage: String?
     @State private var lookupFailed = false
     @State private var isLookingUp = false
@@ -21,7 +25,7 @@ struct VocabularyEntryEditor: View {
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
-        case term, meaning, source
+        case term, meaning, source, sourceTitle, sourceLink
     }
 
     init(
@@ -29,8 +33,9 @@ struct VocabularyEntryEditor: View {
         term: String,
         meaning: String,
         sourceSentence: String,
+        source: LearningVocabularySource? = nil,
         onCancel: @escaping () -> Void,
-        onSave: @escaping (String, String, String) -> String?,
+        onSave: @escaping (String, String, String, LearningVocabularySource?) -> String?,
         lookup: ((String) async -> String?)? = nil,
         clearInitialMeaningOnTermChange: Bool = false
     ) {
@@ -41,6 +46,8 @@ struct VocabularyEntryEditor: View {
         _term = State(initialValue: term)
         _meaning = State(initialValue: meaning)
         _sourceSentence = State(initialValue: sourceSentence)
+        _sourceTitle = State(initialValue: source?.title ?? "")
+        _sourceLink = State(initialValue: source?.url?.absoluteString ?? "")
         _generatedMeaning = State(initialValue: clearInitialMeaningOnTermChange && !meaning.isEmpty ? meaning : nil)
     }
 
@@ -99,6 +106,8 @@ struct VocabularyEntryEditor: View {
                     .focused($focusedField, equals: .source)
                     .accessibilityLabel(L("原句"))
                     .accessibilityIdentifier("vocabulary.source")
+
+                sourceFields
             }
             .textFieldStyle(.roundedBorder)
 
@@ -150,6 +159,69 @@ struct VocabularyEntryEditor: View {
         }
     }
 
+    private var sourceFields: some View {
+        let title = sourceTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = sourceLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = title.isEmpty ? (URL(string: address)?.host ?? address) : title
+        return VStack(alignment: .leading, spacing: 9) {
+            Button {
+                isEditingSource.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: summary.isEmpty ? "plus.circle" : (address.isEmpty ? "doc.text" : "link"))
+                    Text(summary.isEmpty ? L(isEditingSource ? "来源" : "添加来源") : summary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: isEditingSource ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .font(.system(size: 12))
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(summary.isEmpty && !isEditingSource ? L("添加来源") : L("编辑来源"))
+            .accessibilityValue([summary, L(isEditingSource ? "已展开" : "已折叠")]
+                .filter { !$0.isEmpty }.joined(separator: ", "))
+            .accessibilityIdentifier("vocabulary.provenance.edit")
+
+            if isEditingSource {
+                VStack(alignment: .leading, spacing: 7) {
+                    TextField(L("网页标题或文档名"), text: $sourceTitle)
+                        .focused($focusedField, equals: .sourceTitle)
+                        .accessibilityLabel(L("网页标题或文档名"))
+                        .accessibilityIdentifier("vocabulary.provenance.title")
+
+                    TextField(L("网页链接（https://…）"), text: $sourceLink)
+                        .focused($focusedField, equals: .sourceLink)
+                        .accessibilityLabel(L("网页链接"))
+                        .accessibilityIdentifier("vocabulary.provenance.url")
+                        .onChange(of: sourceLink) { _ in hasInvalidSourceLink = false }
+
+                    if hasInvalidSourceLink {
+                        Text(L("请输入以 https:// 或 http:// 开头的有效网页链接。"))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("vocabulary.provenance.error")
+                    }
+
+                    if !title.isEmpty || !address.isEmpty {
+                        Button(L("清除来源")) {
+                            sourceTitle = ""
+                            sourceLink = ""
+                            hasInvalidSourceLink = false
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.system(size: 11))
+                        .accessibilityIdentifier("vocabulary.provenance.clear")
+                    }
+                }
+            }
+        }
+    }
+
     private func fieldLabel(_ text: String, optional: Bool = false) -> some View {
         HStack(spacing: 5) {
             Text(L(text))
@@ -166,7 +238,15 @@ struct VocabularyEntryEditor: View {
 
     private func save() {
         guard canSave else { return }
-        if onSave(term, meaning, sourceSentence) != nil {
+        let address = sourceLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = LearningVocabularySource(title: sourceTitle, url: URL(string: address))
+        if !address.isEmpty, source?.url == nil {
+            hasInvalidSourceLink = true
+            isEditingSource = true
+            focusedField = .sourceLink
+            return
+        }
+        if onSave(term, meaning, sourceSentence, source) != nil {
             dismiss()
         } else {
             errorMessage = L("未能保存，请检查单词后重试。")

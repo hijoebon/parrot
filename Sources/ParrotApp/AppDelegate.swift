@@ -453,7 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         selectionCaptureID = captureID
         selectionCaptureTask = Task { [weak self] in
             guard let self else { return }
-            let text = await SelectionCapture.selectedText(from: sourceApp.processIdentifier)
+            let capture = await SelectionCapture.capture(from: sourceApp)
             guard selectionCaptureID == captureID, !Task.isCancelled else { return }
             selectionCaptureTask = nil
             selectionCaptureID = nil
@@ -463,8 +463,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 floating.hide(force: true)
                 return
             }
-            DebugLog.log("selection capture: \(text.map { "len=\($0.count)" } ?? "nil")")
-            guard let text, !text.isEmpty else {
+            DebugLog.log("selection capture: \(capture.map { "len=\($0.text.count)" } ?? "nil")")
+            guard let capture else {
                 guard SelectionCapture.hasAccessibilityPermission(prompt: false) else {
                     showPermissionNotice(.accessibility)
                     return
@@ -474,15 +474,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             state.dismissWorkspaceNotice()
-            if mode == .translate, shouldRestorePreviousWorkspace(forCapturedText: text) {
+            if mode == .translate, state.canRestoreCapturedTranslation(text: capture.text) {
+                state.recordVocabularySource(capture.source, for: capture.text)
                 restorePreviousWorkspace(reason: "selection unchanged")
                 return
             }
             runTranslation(
-                text,
+                capture.text,
                 mode: mode,
                 origin: mode == .lookup ? .lookup : .selection,
-                sourceApp: sourceAppName(sourceApp)
+                sourceApp: sourceAppName(sourceApp),
+                vocabularySource: capture.source
             )
         }
     }
@@ -493,10 +495,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         selectionCaptureTask = nil
         selectionCaptureID = nil
         floating.endSelectionCapture()
-    }
-
-    private func shouldRestorePreviousWorkspace(forCapturedText text: String) -> Bool {
-        state.canRestoreCapturedTranslation(text: text)
     }
 
     private func restorePreviousWorkspace(reason: String) {
@@ -617,7 +615,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         profile: TranslationContextProfile? = nil,
         sourceApp: String? = nil,
         windowTitle: String? = nil,
-        sourceURL: String? = nil
+        sourceURL: String? = nil,
+        vocabularySource: LearningVocabularySource? = nil
     ) {
         cancelSelectionCapture()
         if sourceApp == nil {
@@ -633,7 +632,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             profile: profile,
             sourceApp: sourceApp,
             windowTitle: windowTitle,
-            sourceURL: sourceURL
+            sourceURL: sourceURL,
+            vocabularySource: vocabularySource
         )
         floating.show()
     }

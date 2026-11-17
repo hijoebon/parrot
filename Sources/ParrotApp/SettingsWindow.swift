@@ -583,7 +583,7 @@ struct SettingsView: View {
                 settingRow("默认来源语言") {
                     Picker("", selection: Binding(
                         get: { settings.sourceLanguageCode },
-                        set: { state.setLanguageDirection(sourceCode: $0) }
+                        set: { state.setDefaultLanguageDirection(sourceCode: $0) }
                     )) {
                         Text(L("自动")).tag("auto")
                         ForEach(languages, id: \.0) { code, name in Text(name).tag(code) }
@@ -591,10 +591,11 @@ struct SettingsView: View {
                     .labelsHidden()
                     .frame(width: 140)
                 }
+                formHelpText("从其他应用划词时，自动识别原文语言。")
                 settingRow("默认目标语言") {
                     Picker("", selection: Binding(
                         get: { settings.targetLanguageCode },
-                        set: { state.setLanguageDirection(targetCode: $0) }
+                        set: { state.setDefaultLanguageDirection(targetCode: $0) }
                     )) {
                         ForEach(languages, id: \.0) { code, name in Text(name).tag(code) }
                     }
@@ -1733,6 +1734,12 @@ struct SettingsView: View {
             ForEach(Array(modelConfigsDraft(for: descriptor).enumerated()), id: \.element.id) { index, model in
                 modelConfigRow(model, descriptor: descriptor, index: index)
                 credentialIssue(descriptor, field: .model(model.id))
+            }
+            if descriptor.id == "opencode", let recommended = descriptor.defaultModel {
+                Text(L("日常划词建议用 %@。如果启用了专用翻译引擎，可将它排在首位，按需对比大模型译文。", recommended))
+                    .font(Theme.Font.caption)
+                    .foregroundStyle(Theme.Palette.label2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

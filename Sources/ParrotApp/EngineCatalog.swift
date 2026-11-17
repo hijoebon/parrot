@@ -49,7 +49,7 @@ enum EngineCatalog {
             descriptor("youdao", "有道翻译", .machine, account: AppSettings.youdaoAccount, env: "YOUDAO_CREDENTIALS", placeholder: "AppKey:AppSecret", missingText: "未配置凭证"),
             descriptor("caiyun", "彩云小译", .machine, account: AppSettings.caiyunAccount, env: "CAIYUN_TOKEN", placeholder: "Token"),
             descriptor("microsoft", "Microsoft 翻译", .machine, account: AppSettings.microsoftAccount, env: "MICROSOFT_TRANSLATOR_KEY", placeholder: "订阅 Key"),
-            descriptor("opencode", "OpenCode Go", .llm, account: AppSettings.openCodeAccount, env: "OPENCODE_API_KEY", placeholder: "Go API Key", defaultModel: "glm-5.1"),
+            descriptor("opencode", "OpenCode Go", .llm, account: AppSettings.openCodeAccount, env: "OPENCODE_API_KEY", placeholder: "Go API Key", defaultModel: OpenCodeGoEngine.recommendedModel),
             descriptor("deepseek", "DeepSeek", .llm, account: AppSettings.deepSeekAccount, env: "DEEPSEEK_API_KEY", placeholder: "API Key", defaultModel: "deepseek-chat"),
             descriptor("gemini", "Gemini", .llm, account: AppSettings.geminiAccount, env: "GEMINI_API_KEY", placeholder: "API Key", defaultModel: "gemini-2.0-flash"),
             descriptor("groq", "Groq", .llm, account: AppSettings.groqAccount, env: "GROQ_API_KEY", placeholder: "API Key", defaultModel: "llama-3.3-70b-versatile"),

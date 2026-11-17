@@ -195,6 +195,26 @@ func coordinatorPreservesSessionThroughLanguageResolutionAndProtectedDispatch(pr
     #expect(outcomes.last?.isSuccess == true)
 }
 
+@Test(arguments: [false, true])
+func shortSelectionLimitsOpenCodeWaitOnlyWhenABackupIsAvailable(hasBackup: Bool) async {
+    let calls = ProviderCalls()
+    let registry = ProviderRegistry()
+    registry.register(TrackedEngine(id: "opencode#model", calls: calls, delayMs: 600))
+    if hasBackup { registry.register(TrackedEngine(id: "deepl", calls: calls)) }
+    let coordinator = TranslationCoordinator(registry: registry, perProviderTimeout: 1.2)
+    let request = TranslateRequest(
+        text: "Please review this note.", from: .en, to: .zh,
+        context: TranslationContext(profile: .quickTranslate, origin: .selection)
+    )
+    let stream = await coordinator.translateIncrementally(request, strategy: .firstSuccessful)
+    var outcomes: [AggregatedOutcome] = []
+    for await outcome in stream { outcomes.append(outcome) }
+
+    #expect(await calls.ids == (hasBackup ? ["opencode#model", "deepl"] : ["opencode#model"]))
+    #expect(outcomes.first?.error == (hasBackup ? .timeout : nil))
+    #expect(outcomes.last?.isSuccess == true)
+}
+
 @Test func singleResultBoundsAutomaticFallbackWork() async {
     let calls = ProviderCalls()
     let registry = ProviderRegistry()

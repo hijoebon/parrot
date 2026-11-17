@@ -265,6 +265,7 @@ final class AppSettings: ObservableObject {
         term rawTerm: String,
         meaning rawMeaning: String = "",
         sourceSentence rawSourceSentence: String = "",
+        source: LearningVocabularySource? = nil,
         sceneLabel rawSceneLabel: String = "手动添加"
     ) -> String? {
         let term = LearningRecommendationEngine.normalizedVocabularyTerm(rawTerm)
@@ -279,7 +280,14 @@ final class AppSettings: ObservableObject {
             var entries = learningVocabularyEntries
             entries[index].term = term
             if !meaning.isEmpty { entries[index].meaning = meaning }
-            if !sourceSentence.isEmpty { entries[index].sourceSentence = sourceSentence }
+            if !sourceSentence.isEmpty {
+                if sourceSentence != entries[index].sourceSentence || source != nil {
+                    entries[index].source = source
+                }
+                entries[index].sourceSentence = sourceSentence
+            } else if let source, entries[index].sourceSentence.isEmpty {
+                entries[index].source = source
+            }
             entries[index].sceneLabel = sceneLabel.isEmpty ? (entries[index].sceneLabel.isEmpty ? "手动添加" : entries[index].sceneLabel) : sceneLabel
             entries[index].isManual = true
             entries[index].updatedAt = now
@@ -291,6 +299,7 @@ final class AppSettings: ObservableObject {
                     term: term,
                     meaning: meaning,
                     sourceSentence: sourceSentence,
+                    source: source,
                     sceneLabel: sceneLabel.isEmpty ? "手动添加" : sceneLabel,
                     isManual: true,
                     savedAt: now,
@@ -319,6 +328,20 @@ final class AppSettings: ObservableObject {
         learningVocabularyEntries = entries
     }
 
+    /// Callers that do not edit the source preserve it while the sentence is unchanged.
+    @discardableResult
+    func updateLearningVocabularyEntry(
+        _ id: String,
+        term: String,
+        meaning: String,
+        sourceSentence: String
+    ) -> String? {
+        let original = learningVocabularyEntries.first { $0.id == id }
+        let sentence = sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = original?.sourceSentence == sentence ? original?.source : nil
+        return updateLearningVocabularyEntry(id, term: term, meaning: meaning, sourceSentence: sentence, source: source)
+    }
+
     /// Editing a term changes its lookup identity while retaining its learning history.
     /// If the new term already exists, the two entries become one saved word.
     @discardableResult
@@ -326,7 +349,8 @@ final class AppSettings: ObservableObject {
         _ id: String,
         term rawTerm: String,
         meaning rawMeaning: String,
-        sourceSentence rawSourceSentence: String
+        sourceSentence rawSourceSentence: String,
+        source editedSource: LearningVocabularySource?
     ) -> String? {
         let term = LearningRecommendationEngine.normalizedVocabularyTerm(rawTerm)
         guard !term.isEmpty,
@@ -336,16 +360,29 @@ final class AppSettings: ObservableObject {
         var metadata = original
         var meaning = rawMeaning.trimmingCharacters(in: .whitespacesAndNewlines)
         var sourceSentence = rawSourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        var source = editedSource
         if let existing, existing.id != original.id {
             metadata = Self.mergingVocabularyMetadata(original, with: existing)
             meaning = Self.combiningVocabularyNotes(meaning, with: existing.meaning)
-            sourceSentence = Self.combiningVocabularyNotes(sourceSentence, with: existing.sourceSentence)
+            let savedSentence = existing.sourceSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            if sourceSentence.isEmpty, !savedSentence.isEmpty {
+                source = existing.source
+            } else if sourceSentence == savedSentence {
+                source = source ?? existing.source
+            } else if !savedSentence.isEmpty, source != existing.source {
+                // A merged quote may cite a single source only when both sentences share it.
+                if source?.url == nil || source?.url != existing.source?.url {
+                    source = nil
+                }
+            }
+            sourceSentence = Self.combiningVocabularyNotes(sourceSentence, with: savedSentence)
         }
         let updated = LearningVocabularyEntry(
             id: newID,
             term: term,
             meaning: meaning,
             sourceSentence: sourceSentence,
+            source: source,
             sceneLabel: metadata.sceneLabel,
             occurrenceCount: metadata.occurrenceCount,
             masteryStage: metadata.masteryStage,
@@ -401,7 +438,12 @@ final class AppSettings: ObservableObject {
     ) -> LearningVocabularyEntry {
         var merged = entry
         if merged.meaning.isEmpty { merged.meaning = other.meaning }
-        if merged.sourceSentence.isEmpty { merged.sourceSentence = other.sourceSentence }
+        if merged.sourceSentence.isEmpty, !other.sourceSentence.isEmpty {
+            merged.sourceSentence = other.sourceSentence
+            merged.source = other.source
+        } else if merged.sourceSentence == other.sourceSentence {
+            merged.source = merged.source ?? other.source
+        }
         if merged.sceneLabel.isEmpty { merged.sceneLabel = other.sceneLabel }
         merged.occurrenceCount = max(entry.occurrenceCount, other.occurrenceCount)
         merged.masteryStage = max(entry.masteryStage, other.masteryStage)
@@ -453,7 +495,7 @@ final class AppSettings: ObservableObject {
         updateLearningVocabularyEntry(expression.id, create: LearningVocabularyEntry(expression: expression, sceneLabel: sceneLabel)) { entry in
             entry.term = expression.term
             entry.meaning = expression.meaning
-            entry.sourceSentence = expression.sourceSentence
+            if entry.source == nil { entry.sourceSentence = expression.sourceSentence }
             entry.sceneLabel = sceneLabel
             entry.occurrenceCount = max(entry.occurrenceCount, expression.occurrenceCount)
             entry.masteryStage = max(entry.masteryStage, expression.masteryStage)

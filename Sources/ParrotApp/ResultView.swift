@@ -312,7 +312,8 @@ struct ResultView: View {
     private var header: some View {
         HStack(spacing: Theme.Spacing.s8) {
             LanguageDirectionControl(
-                sourceCode: state.sourceLanguage == .auto ? "auto" : (state.sourceLanguage.code ?? state.settings.sourceLanguageCode),
+                sourceCode: state.sourceLanguage.code ?? "auto",
+                detectedSourceCode: state.isSourceDirty ? nil : state.detectedSource.code,
                 targetCode: state.targetLanguage.code ?? state.settings.targetLanguageCode,
                 onSourceChange: { state.setLanguageDirection(sourceCode: $0) },
                 onTargetChange: { state.setLanguageDirection(targetCode: $0) },
@@ -407,9 +408,7 @@ struct ResultView: View {
     }
 
     private func swapLanguages() {
-        let sourceCode = state.settings.sourceLanguageCode
-        let targetCode = state.settings.targetLanguageCode
-        guard sourceCode != "auto" else { return }
+        guard let sourceCode = state.sourceLanguage.code, let targetCode = state.targetLanguage.code else { return }
         state.setLanguageDirection(sourceCode: targetCode, targetCode: sourceCode)
     }
 
@@ -580,10 +579,13 @@ struct ResultView: View {
         settings.learningRecognitionEnabled ? vocabularySelection : nil
     }
 
+    private func matchesWorkspaceLookup(_ selection: WorkspaceVocabularySelection) -> Bool {
+        !selection.usesTranslation && state.isLookupMode && !state.isSourceDirty
+            && selection.term == state.committedSourceTrimmed
+    }
+
     private func availableMeaning(for selection: WorkspaceVocabularySelection) -> String? {
-        if !selection.usesTranslation,
-           selection.term == state.committedSourceTrimmed,
-           !state.isSourceDirty, state.isLookupMode,
+        if matchesWorkspaceLookup(selection),
            let result = state.primarySuccessfulOutcome?.result,
            let meaning = LearningRecommendationEngine.meaningForLookupResult(result, term: selection.term) {
             return meaning
@@ -595,7 +597,9 @@ struct ResultView: View {
     }
 
     private var selectionLookupRequest: WorkspaceSelectionLookupRequest? {
-        guard let selection = previewSelection, availableMeaning(for: selection) == nil else { return nil }
+        guard let selection = previewSelection,
+              availableMeaning(for: selection) == nil,
+              !(state.isTranslating && matchesWorkspaceLookup(selection)) else { return nil }
         return WorkspaceSelectionLookupRequest(selection: selection, retry: selectionLookupRetry)
     }
 
@@ -640,8 +644,10 @@ struct ResultView: View {
                 if saved || meaning != nil || lookup != nil {
                     Button {
                         if let meaning, !saved {
+                            let sentence = vocabularySentence(for: selection)
                             if settings.addLearningVocabularyTerm(
-                                term: selection.term, meaning: meaning, sourceSentence: selection.context,
+                                term: selection.term, meaning: meaning, sourceSentence: sentence,
+                                source: state.vocabularySource(for: sentence),
                                 sceneLabel: "工作区表达"
                             ) != nil {
                                 showFeedback("已加入单词本")
@@ -693,15 +699,25 @@ struct ResultView: View {
             ? state.primarySuccessfulOutcome?.result.flatMap {
                 LearningRecommendationEngine.meaningForLookupResult($0, term: term)
             } : state.primaryActionTranslatedText) : nil
+        let sentence = entry?.sourceSentence ?? vocabularySentence(for: selection)
         vocabularyDraft = WorkspaceVocabularyDraft(
             anchorSelection: inline ? selection : nil,
             entryID: entry?.id,
             term: entry?.term ?? term,
             meaning: entry?.meaning ?? meaning ?? wholeSourceMeaning ?? "",
-            sourceSentence: entry?.sourceSentence ?? selection?.context ?? state.sourceDraftTrimmed,
+            sourceSentence: sentence,
+            source: entry == nil ? state.vocabularySource(for: sentence) : entry?.source,
+            lookupContext: selection?.context ?? sentence,
             providerID: lookupProviderID(for: selection),
             usesTranslation: selection?.usesTranslation ?? false
         )
+    }
+
+    private func vocabularySentence(for selection: WorkspaceVocabularySelection?) -> String {
+        if selection?.usesTranslation == true {
+            return state.committedSourceTrimmed
+        }
+        return selection?.context ?? state.sourceDraftTrimmed
     }
 
     private func lookupProviderID(for selection: WorkspaceVocabularySelection?) -> String {
@@ -724,16 +740,18 @@ struct ResultView: View {
             term: draft.term,
             meaning: draft.meaning,
             sourceSentence: draft.sourceSentence,
+            source: draft.source,
             onCancel: { vocabularyDraft = nil },
-            onSave: { term, meaning, sentence in
+            onSave: { term, meaning, sentence, source in
                 let id: String?
                 if let entryID = draft.entryID {
                     id = settings.updateLearningVocabularyEntry(
-                        entryID, term: term, meaning: meaning, sourceSentence: sentence
+                        entryID, term: term, meaning: meaning, sourceSentence: sentence, source: source
                     )
                 } else {
                     id = settings.addLearningVocabularyTerm(
                         term: term, meaning: meaning, sourceSentence: sentence,
+                        source: source,
                         sceneLabel: "工作区表达"
                     )
                 }
@@ -745,7 +763,7 @@ struct ResultView: View {
             },
             lookup: { term in
                 let result = await state.lookupLearningSelection(
-                    term, contextText: draft.sourceSentence, providerID: draft.providerID,
+                    term, contextText: draft.lookupContext, providerID: draft.providerID,
                     usesTranslation: draft.usesTranslation
                 )
                 return result.flatMap { LearningRecommendationEngine.meaningForLookupResult($0, term: term) }
@@ -848,6 +866,8 @@ private struct WorkspaceVocabularyDraft: Identifiable {
     let term: String
     let meaning: String
     let sourceSentence: String
+    let source: LearningVocabularySource?
+    let lookupContext: String
     let providerID: String
     let usesTranslation: Bool
 }
@@ -984,6 +1004,7 @@ private struct WorkspaceNoticeView: View {
 
 private struct LanguageDirectionControl: View {
     let sourceCode: String
+    let detectedSourceCode: String?
     let targetCode: String
     let onSourceChange: (String) -> Void
     let onTargetChange: (String) -> Void
@@ -1012,7 +1033,8 @@ private struct LanguageDirectionControl: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            languageMenu(title: shortLabel(sourceCode, auto: "自动"), options: sourceOptions, action: onSourceChange)
+            languageMenu(title: sourceTitle, options: sourceOptions, action: onSourceChange)
+                .accessibilityIdentifier("workspace.sourceLanguage")
             Button(action: onSwap) {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.system(size: 11, weight: .regular))
@@ -1024,9 +1046,15 @@ private struct LanguageDirectionControl: View {
             .disabled(sourceCode == "auto")
             .help(L(sourceCode == "auto" ? "自动检测来源语言时不可互换" : "互换来源与目标语言"))
             languageMenu(title: shortLabel(targetCode, auto: "中"), options: targetOptions, action: onTargetChange)
+                .accessibilityIdentifier("workspace.targetLanguage")
         }
         .font(.system(size: 13, weight: .medium))
         .frame(height: 32)
+    }
+
+    private var sourceTitle: String {
+        guard sourceCode == "auto", let detectedSourceCode else { return shortLabel(sourceCode, auto: "自动") }
+        return "\(L("自动")) · \(shortLabel(detectedSourceCode, auto: "自动"))"
     }
 
     private func languageMenu(
@@ -1039,7 +1067,7 @@ private struct LanguageDirectionControl: View {
                 Button(L(name)) { action(code) }
             }
         } label: {
-            Text(L(title))
+            Text(title)
                 .foregroundStyle(Theme.Palette.label)
                 .padding(.horizontal, 6)
                 .frame(minWidth: 40, minHeight: 32)
@@ -1050,7 +1078,7 @@ private struct LanguageDirectionControl: View {
     }
 
     private func shortLabel(_ code: String, auto: String) -> String {
-        if code == "auto" { return auto }
+        if code == "auto" { return L(auto) }
         return LangPill.label(Language(code: code), auto: auto)
     }
 }

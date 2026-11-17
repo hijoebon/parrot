@@ -20,8 +20,10 @@ open class OpenAICompatEngine: TranslationProvider, @unchecked Sendable {
 
     private var apiKey: String?
     private var model: String
-    private var endpoint: URL
+    private var configuredEndpoint: URL?
     private let session: URLSession
+
+    fileprivate var modelDefaultEndpoint: URL { defaultEndpoint }
 
     public init(
         id: String,
@@ -47,7 +49,6 @@ open class OpenAICompatEngine: TranslationProvider, @unchecked Sendable {
         self.requiresAPIKey = requiresAPIKey
         self.requestTimeout = requestTimeout
         self.model = defaultModel
-        self.endpoint = defaultEndpoint
         self.supportedLanguages = supportedLanguages
         self.configuredCapabilities = capabilities
         self.session = session
@@ -58,7 +59,7 @@ open class OpenAICompatEngine: TranslationProvider, @unchecked Sendable {
     open func configure(_ config: ProviderConfig) throws {
         apiKey = config.extra["apiKey"]
         if let m = config.extra["model"], !m.isEmpty { model = m }
-        if let e = config.extra["endpoint"], let url = URL(string: e) { endpoint = url }
+        if let e = config.extra["endpoint"], let url = URL(string: e) { configuredEndpoint = url }
     }
 
     open func translate(_ req: TranslateRequest) async throws -> TranslateResult {
@@ -75,7 +76,7 @@ open class OpenAICompatEngine: TranslationProvider, @unchecked Sendable {
             payload[key] = value
         }
 
-        var request = URLRequest(url: endpoint)
+        var request = URLRequest(url: configuredEndpoint ?? modelDefaultEndpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = requestTimeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -353,15 +354,25 @@ public final class OpenAIEngine: OpenAICompatEngine {
 }
 
 public final class OpenCodeGoEngine: OpenAICompatEngine {
+    public static let recommendedModel = "glm-5.3-flash"
+    public static let defaultChatCompletionsEndpoint = URL(string: "https://opencode.ai/inference/go/openai/v1/chat/completions")!
+    private static let legacyChatCompletionsEndpoint = URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!
+
     public init(session: URLSession = .shared) {
         super.init(
             id: "opencode",
             displayName: "OpenCode Go",
-            defaultEndpoint: URL(string: "https://opencode.ai/zen/go/v1/chat/completions")!,
-            defaultModel: "glm-5.1",
+            defaultEndpoint: Self.defaultChatCompletionsEndpoint,
+            defaultModel: Self.recommendedModel,
             requestTimeout: 180,
             session: session
         )
+    }
+
+    fileprivate override var modelDefaultEndpoint: URL {
+        // GLM-5.1 was the previous default and was documented on the older route.
+        if modelName == "glm-5.1" { return Self.legacyChatCompletionsEndpoint }
+        return super.modelDefaultEndpoint
     }
 
     public override func additionalHeaders(for req: TranslateRequest) -> [String: String] {

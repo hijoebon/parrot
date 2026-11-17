@@ -19,7 +19,7 @@ struct OpenCodeRequestTests {
         let requests = OpenCodeRequestProtocol.requests
         #expect(requests.count == 2)
         for (index, request) in requests.enumerated() {
-            #expect(request.url?.absoluteString == "https://opencode.ai/zen/go/v1/chat/completions")
+            #expect(request.url?.absoluteString == "https://opencode.ai/inference/go/openai/v1/chat/completions")
             #expect(request.httpMethod == "POST")
             #expect(request.value(forHTTPHeaderField: "User-Agent")?.hasPrefix("Parrot/") == true)
             #expect(request.value(forHTTPHeaderField: "x-opencode-session") == sessionID.uuidString)
@@ -27,13 +27,38 @@ struct OpenCodeRequestTests {
             #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
             let body = try #require(request.httpBody)
             let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-            #expect(payload["model"] as? String == "glm-5.1")
+            #expect(payload["model"] as? String == "glm-5.3-flash")
             let messages = try #require(payload["messages"] as? [[String: String]])
             let original = TranslateRequest(text: inputs[index], from: .en, to: .zh)
             #expect(messages == [
                 ["role": "system", "content": OpenAICompatEngine.systemPrompt(for: original)],
                 ["role": "user", "content": OpenAICompatEngine.userPrompt(for: original)]
             ])
+        }
+    }
+
+    @Test func oldModelKeepsItsRouteAndExplicitEndpointTakesPrecedence() async throws {
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let engine = OpenCodeGoEngine(session: session)
+        let input = TranslateRequest(text: "shore", from: .en, to: .zh)
+        try engine.configure(ProviderConfig(extra: ["apiKey": "test-key", "model": "glm-5.1"]))
+        _ = try await engine.translate(input)
+        try engine.configure(ProviderConfig(extra: [
+            "apiKey": "test-key", "model": "glm-5.1",
+            "endpoint": "https://go-proxy.example.net/v1/chat/completions"
+        ]))
+        _ = try await engine.translate(input)
+
+        let requests = OpenCodeRequestProtocol.requests
+        #expect(requests.map { $0.url?.absoluteString } == [
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            "https://go-proxy.example.net/v1/chat/completions"
+        ])
+        for request in requests {
+            let body = try #require(request.httpBody)
+            let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            #expect(payload["model"] as? String == "glm-5.1")
         }
     }
 

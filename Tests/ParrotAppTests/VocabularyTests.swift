@@ -38,6 +38,7 @@ import ParrotCore
         let initial = try #require(settings.learningVocabularyEntry(for: "latency"))
         #expect(initial.viewCount == 0)
         #expect(initial.lastViewedAt == nil)
+        #expect(initial.source == nil)
 
         let latestView = Date(timeIntervalSinceReferenceDate: 400)
         settings.recordLearningVocabularyView(initial.id, at: latestView)
@@ -50,6 +51,90 @@ import ParrotCore
         expected.lastViewedAt = latestView
         #expect(reloaded.learningVocabularyEntries.count == 1)
         #expect(viewed == expected)
+    }
+}
+
+@MainActor
+@Test func vocabularySourcePersistsWithTheSentenceAndCanBeEditedOrRemoved() throws {
+    try withVocabularySettings { settings, defaults, fileURL in
+        let url = try #require(URL(string: "https://example.com/guide?lang=en#latency"))
+        let webSource = try #require(LearningVocabularySource(title: " Network Guide ", url: url))
+        let sentence = "Network latency increased."
+        let id = try #require(settings.addLearningVocabularyTerm(
+            term: "latency", sourceSentence: sentence, source: webSource
+        ))
+        _ = settings.addLearningVocabularyTerm(term: "latency", sourceSentence: sentence)
+        _ = settings.updateLearningVocabularyEntry(id, term: "latency", meaning: "延迟", sourceSentence: sentence)
+
+        let reloaded = AppSettings(defaults: defaults, terminologyStore: TerminologyStore(fileURL: fileURL))
+        let entry = try #require(reloaded.learningVocabularyEntry(for: "latency"))
+        #expect(entry.source?.title == "Network Guide")
+        #expect(entry.source?.url == url)
+        #expect(entry.sourceSentence == sentence)
+
+        let documentSource = try #require(LearningVocabularySource(title: "Release Notes.pdf"))
+        _ = reloaded.updateLearningVocabularyEntry(
+            id, term: "latency", meaning: "延迟", sourceSentence: sentence, source: documentSource
+        )
+        #expect(reloaded.learningVocabularyEntry(for: "latency")?.source == documentSource)
+        _ = reloaded.updateLearningVocabularyEntry(
+            id, term: "latency", meaning: "延迟", sourceSentence: sentence, source: nil
+        )
+        #expect(reloaded.learningVocabularyEntry(for: "latency")?.source == nil)
+    }
+}
+
+@MainActor
+@Test func vocabularyReplacementDoesNotKeepProvenanceForThePreviousSentence() throws {
+    try withVocabularySettings { settings, _, _ in
+        let source = try #require(LearningVocabularySource(title: "Network Guide"))
+        _ = settings.addLearningVocabularyTerm(
+            term: "latency", sourceSentence: "Network latency increased.", source: source
+        )
+        _ = settings.addLearningVocabularyTerm(term: "latency", sourceSentence: "Measure the latency.")
+
+        let entry = try #require(settings.learningVocabularyEntry(for: "latency"))
+        #expect(entry.source == nil)
+        #expect(entry.sourceSentence == "Measure the latency.")
+    }
+}
+
+@Test func vocabularySourceOnlyOpensWebLinks() throws {
+    let internalURL = try #require(URL(string: "parrot://translate?text=latency"))
+    #expect(LearningVocabularySource(url: internalURL) == nil)
+    let document = try #require(LearningVocabularySource(title: " Release Notes.pdf ", url: internalURL))
+    #expect(document.title == "Release Notes.pdf")
+    #expect(document.url == nil)
+}
+
+@MainActor
+@Test func vocabularyMasteryAndHistorySaveKeepTheStoredSourceAndSentenceTogether() throws {
+    try withVocabularySettings { settings, _, _ in
+        let source = try #require(LearningVocabularySource(title: "Release Notes.pdf"))
+        let id = try #require(settings.addLearningVocabularyTerm(term: "latency", source: source))
+        let item = try #require(LearningRecommendationEngine.vocabularyItems(
+            records: [], occurrenceCounts: [:], vocabularyEntries: settings.learningVocabularyEntries
+        ).first)
+
+        settings.markLearningMastered(item.expression)
+        let masteredEntry = try #require(settings.learningVocabularyEntry(for: "latency"))
+        #expect(masteredEntry.source == source)
+        #expect(masteredEntry.sourceSentence.isEmpty)
+        #expect(masteredEntry.masteryStage == 5)
+
+        let savedSentence = "Network latency increased."
+        _ = settings.updateLearningVocabularyEntry(
+            id, term: "latency", meaning: "延迟", sourceSentence: savedSentence, source: source
+        )
+        let newerExpression = LearningExpression(
+            id: id, term: "latency", phonetic: nil, kind: "表达", meaning: "延迟", chunk: "", pairs: [],
+            occurrenceCount: 1, masteryStage: 1, sourceSentence: "Measure the latency."
+        )
+        settings.markLearningSaved(newerExpression)
+
+        let savedEntry = try #require(settings.learningVocabularyEntry(for: "latency"))
+        #expect(savedEntry.source == source)
+        #expect(savedEntry.sourceSentence == savedSentence)
     }
 }
 
@@ -97,6 +182,8 @@ import ParrotCore
 @MainActor
 @Test func vocabularyRenamingIntoAnExistingWordMergesWithoutLosingReviewMetadata() throws {
     try withVocabularySettings { settings, _, _ in
+        let editedSource = try #require(LearningVocabularySource(title: "Shipping Checklist"))
+        let savedSource = try #require(LearningVocabularySource(title: "Team Handbook"))
         let original = LearningVocabularyEntry(
             id: "ship", term: "ship", meaning: "发布", masteryStage: 2, wrongCount: 3,
             isFavorite: true, savedAt: Date(timeIntervalSince1970: 100),
@@ -104,6 +191,7 @@ import ParrotCore
         )
         let existing = LearningVocabularyEntry(
             id: "ship it", term: "ship it", meaning: "发布它", sourceSentence: "We can ship it tomorrow.",
+            source: savedSource,
             occurrenceCount: 8, masteryStage: 4,
             savedAt: Date(timeIntervalSince1970: 200), lastReviewedAt: Date(timeIntervalSince1970: 300),
             viewCount: 2, lastViewedAt: Date(timeIntervalSince1970: 400)
@@ -112,7 +200,7 @@ import ParrotCore
         settings.restoreLearningVocabularyEntry(existing)
 
         let resultingID = settings.updateLearningVocabularyEntry(
-            original.id, term: "SHIP  IT", meaning: "发布上线", sourceSentence: "Let's ship it."
+            original.id, term: "SHIP  IT", meaning: "发布上线", sourceSentence: "Let's ship it.", source: editedSource
         )
         let merged = try #require(settings.learningVocabularyEntry(for: "ship it"))
 
@@ -120,6 +208,7 @@ import ParrotCore
         #expect(settings.learningVocabularyEntries.count == 1)
         #expect(merged.meaning == "发布上线\n\n发布它")
         #expect(merged.sourceSentence == "Let's ship it.\n\nWe can ship it tomorrow.")
+        #expect(merged.source == nil)
         #expect(merged.isFavorite)
         #expect(merged.masteryStage == 4)
         #expect(merged.wrongCount == 3)
@@ -143,8 +232,10 @@ import ParrotCore
 @Test func vocabularyRenameCollisionRetainsExistingNotesWhenEditedFieldsAreBlank() throws {
     try withVocabularySettings { settings, _, _ in
         let original = LearningVocabularyEntry(id: "ship", term: "ship", meaning: "发布")
+        let source = try #require(LearningVocabularySource(title: "Team Handbook"))
         let existing = LearningVocabularyEntry(
-            id: "ship it", term: "ship it", meaning: "发布它", sourceSentence: "We can ship it tomorrow."
+            id: "ship it", term: "ship it", meaning: "发布它", sourceSentence: "We can ship it tomorrow.",
+            source: source
         )
         settings.restoreLearningVocabularyEntry(original)
         settings.restoreLearningVocabularyEntry(existing)
@@ -158,6 +249,7 @@ import ParrotCore
         #expect(settings.learningVocabularyEntries.count == 1)
         #expect(merged.meaning == existing.meaning)
         #expect(merged.sourceSentence == existing.sourceSentence)
+        #expect(merged.source == existing.source)
     }
 }
 
@@ -193,8 +285,10 @@ import ParrotCore
 @MainActor
 @Test func vocabularyRemovingAndRestoringPreservesTheWholeEntry() throws {
     try withVocabularySettings { settings, _, _ in
+        let source = try #require(LearningVocabularySource(title: "Proposal.pdf"))
         let entry = LearningVocabularyEntry(
             id: "proposal", term: "proposal", meaning: "提案", sourceSentence: "Review the proposal.",
+            source: source,
             sceneLabel: "商务", occurrenceCount: 4, masteryStage: 5, wrongCount: 2,
             isFavorite: true, savedAt: Date(timeIntervalSince1970: 100), updatedAt: Date(timeIntervalSince1970: 200),
             lastReviewedAt: Date(timeIntervalSince1970: 300), nextReviewAt: Date(timeIntervalSince1970: 400),
